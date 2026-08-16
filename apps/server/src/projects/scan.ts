@@ -151,8 +151,13 @@ export async function scanProjects(rootDir: string): Promise<ScanResult> {
   let entries
   try {
     entries = await readdir(rootDir, { withFileTypes: true })
-  } catch {
-    return result
+  } catch (err) {
+    // A projects root that does not exist yet is genuinely empty. Anything else
+    // — EACCES, EMFILE — must not masquerade as "no projects", because the
+    // listing route prunes the metadata index against this result.
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTDIR') return result
+    throw err
   }
 
   for (const entry of entries) {

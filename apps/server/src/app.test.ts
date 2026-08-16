@@ -1,17 +1,18 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createSqliteStore } from '@sd/store'
+import { createSqliteStore, type MetadataStore } from '@sd/store'
 import type { FastifyInstance } from 'fastify'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { buildApp } from './app.js'
 
 let dir: string
 let app: FastifyInstance
+let store: MetadataStore
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'sd-app-'))
-  const store = createSqliteStore(join(dir, 'data', 'test.db'))
+  store = createSqliteStore(join(dir, 'data', 'test.db'))
   await store.init()
   app = await buildApp({
     config: { port: 0, projectsDir: join(dir, 'projects'), sqliteFile: join(dir, 'data', 'test.db') },
@@ -21,8 +22,14 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await app.close()
-  // On Windows the just-closed sqlite client can hold its file handle a beat
-  // longer than app.close() takes to resolve. See
+  // Each test closes the store it opened. Without this the suite abandons one
+  // unclosed libsql handle per test — see packages/store/src/contract.ts:25-31
+  // for the same rule applied there.
+  await store.close()
+  // Closing the store is necessary but not sufficient on Windows: the just-closed
+  // sqlite client can hold its file handle a beat longer than store.close() takes
+  // to resolve. Confirmed by measurement — removing the retry after adding the
+  // close above still produced EBUSY on every test. See
   // packages/store/src/sqlite.test.ts:21-27 for the same non-fatal retry.
   try {
     rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
@@ -91,6 +98,17 @@ describe('projects', () => {
     const gone = await app.inject({ method: 'GET', url: `/api/projects/${created.json().id}` })
     expect(gone.statusCode).toBe(404)
   })
+
+  it('preserves lastOpenedAt across a rescan', async () => {
+    const id = (await create('Parking Lot')).json().id
+    await app.inject({ method: 'GET', url: '/api/projects' })
+
+    const row = await store.getProject(id)
+    await store.upsertProject({ ...row!, lastOpenedAt: 1_700_000_000_000 })
+
+    await app.inject({ method: 'GET', url: '/api/projects' })
+    expect((await store.getProject(id))?.lastOpenedAt).toBe(1_700_000_000_000)
+  })
 })
 
 describe('files', () => {
@@ -138,6 +156,35 @@ describe('files', () => {
   it('returns 400 for an unknown view kind', async () => {
     const id = (await create('Parking Lot')).json().id
     const res = await app.inject({ method: 'GET', url: `/api/projects/${id}/views/nope/files` })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('returns 404 for a file request against an unknown project', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/projects/nope/views/lld/files' })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('prefers 400 over 404 when both the view and the project are bad', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/projects/nope/views/bogus/files' })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('returns 400 when writing to a path that escapes the view', async () => {
+    const id = (await create('Parking Lot')).json().id
+    const res = await app.inject({
+      method: 'PUT',
+      url: `/api/projects/${id}/views/lld/file`,
+      payload: { path: '../../escape.java', content: 'x' },
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('returns 400 when the path query parameter is repeated', async () => {
+    const id = (await create('Parking Lot')).json().id
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/projects/${id}/views/lld/file?path=a.java&path=b.java`,
+    })
     expect(res.statusCode).toBe(400)
   })
 })

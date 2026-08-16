@@ -16,14 +16,23 @@ export async function findProject(
   return summary ? { summary, dir: join(config.projectsDir, summary.path) } : null
 }
 
-async function index(store: MetadataStore, summary: ProjectSummary): Promise<void> {
+/**
+ * `lastOpenedAt` is passed in rather than hard-written: it is the one column
+ * that is NOT derivable from disk, so re-indexing a scanned project must carry
+ * the stored value forward or the column can never survive a single listing.
+ */
+async function index(
+  store: MetadataStore,
+  summary: ProjectSummary,
+  lastOpenedAt: number | null,
+): Promise<void> {
   await store.upsertProject({
     id: summary.id,
     title: summary.title,
     path: summary.path,
     tags: summary.tags,
     views: summary.views,
-    lastOpenedAt: null,
+    lastOpenedAt,
     updatedAt: summary.updatedAt,
   })
 }
@@ -35,14 +44,24 @@ export function registerProjectRoutes(
   const { config, store } = deps
 
   app.get('/api/projects', async (): Promise<ProjectListResponse> => {
+    // If the projects root is unreadable, scanProjects now throws rather than
+    // reporting an empty directory — which matters below, because an empty scan
+    // prunes the whole index.
     const { projects, broken } = await scanProjects(config.projectsDir)
-    for (const p of projects) await index(store, p)
+
+    // Read the index once. It supplies both the values that must survive a
+    // rescan and the row set the prune works from.
+    const existing = new Map((await store.listProjects()).map((row) => [row.id, row]))
+
+    for (const p of projects) {
+      await index(store, p, existing.get(p.id)?.lastOpenedAt ?? null)
+    }
 
     // The store is an index, not a source of truth. Drop rows whose project
     // has been deleted or moved away, so that layouts and notes added in M4
     // cannot accumulate against ids that no longer exist.
     const live = new Set(projects.map((p) => p.id))
-    for (const row of await store.listProjects()) {
+    for (const row of existing.values()) {
       if (!live.has(row.id)) await store.deleteProject(row.id)
     }
 
@@ -54,7 +73,7 @@ export function registerProjectRoutes(
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.message })
 
     const summary = await createProject(config.projectsDir, parsed.data)
-    await index(store, summary)
+    await index(store, summary, null) // never opened
     return reply.code(201).send(summary)
   })
 
