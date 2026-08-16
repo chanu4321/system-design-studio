@@ -20,6 +20,13 @@ describe('slugify', () => {
   it('falls back to "project" when nothing survives', () => {
     expect(slugify('!!!')).toBe('project')
   })
+  it('caps the slug length so Windows paths stay under the limit', () => {
+    expect(slugify('a'.repeat(200)).length).toBeLessThanOrEqual(60)
+  })
+  it('does not leave a trailing hyphen when truncation lands on a separator', () => {
+    // 59 characters then a space: a naive slice would end on the separator.
+    expect(slugify(`${'a'.repeat(59)} bcdef`).endsWith('-')).toBe(false)
+  })
 })
 
 describe('createProject', () => {
@@ -59,6 +66,26 @@ describe('createProject', () => {
     const b = await createProject(root, { title: 'B', views: {} })
     expect(a.id).not.toBe(b.id)
   })
+
+  it('creates a project from a very long title without blowing the path limit', async () => {
+    const summary = await createProject(root, {
+      title: 'Parking Lot '.repeat(40),
+      views: { lld: { language: 'java' } },
+    })
+    expect(summary.path.length).toBeLessThanOrEqual(60)
+    expect(existsSync(join(root, summary.path, 'lld', 'src'))).toBe(true)
+  })
+
+  it('gives concurrent creates of the same title distinct directories', async () => {
+    const [a, b] = await Promise.all([
+      createProject(root, { title: 'Parking Lot', views: {} }),
+      createProject(root, { title: 'Parking Lot', views: {} }),
+    ])
+    expect(a.path).not.toBe(b.path)
+    expect(a.id).not.toBe(b.id)
+    // Neither create may have overwritten the other's manifest.
+    expect((await scanProjects(root)).projects).toHaveLength(2)
+  })
 })
 
 describe('scanProjects', () => {
@@ -87,5 +114,23 @@ describe('scanProjects', () => {
     expect(projects).toHaveLength(1)
     expect(broken).toHaveLength(1)
     expect(broken[0]?.path).toBe('bad')
+  })
+
+  it('returns nothing for a root directory that does not exist', async () => {
+    expect(await scanProjects(join(root, 'no-such-dir'))).toEqual({ projects: [], broken: [] })
+  })
+
+  it('advances updatedAt when a source file is added after creation', async () => {
+    const created = await createProject(root, {
+      title: 'Parking Lot',
+      views: { lld: { language: 'java' } },
+    })
+    const before = (await scanProjects(root)).projects[0]?.updatedAt ?? 0
+
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    writeFileSync(join(root, created.path, 'lld', 'src', 'Vehicle.java'), 'class Vehicle {}')
+
+    const after = (await scanProjects(root)).projects[0]?.updatedAt ?? 0
+    expect(after).toBeGreaterThan(before)
   })
 })
