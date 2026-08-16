@@ -1,0 +1,19 @@
+{
+  "name": "@sd/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@sd/shared": "workspace:*",
+    "@sd/store": "workspace:*",
+    "fastify": "^5",
+    "@fastify/cors": "^10",
+    "zod": "^3",
+    "dotenv": "^16"
+  }
+}
