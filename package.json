@@ -1,0 +1,17 @@
+{
+  "name": "system-design",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "dev": "pnpm --parallel --filter \"./apps/*\" dev"
+  },
+  "devDependencies": {
+    "typescript": "^5",
+    "vitest": "^3",
+    "tsx": "^4",
+    "dotenv": "^16"
+  }
+}
