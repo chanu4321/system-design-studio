@@ -1,0 +1,11 @@
+node_modules/
+dist/
+data/
+.env
+*.tsbuildinfo
+
+# Process scaffolding, deliberately untracked: the design spec, the
+# implementation plans, and the agent workspace. The repository history is
+# the application, not the paperwork that produced it.
+docs/
+.superpowers/
