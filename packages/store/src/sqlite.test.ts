@@ -12,15 +12,14 @@ describeMetadataStore('sqlite', async () => createSqliteStore(join(dir, 'test.db
 // Removing the temp directory is housekeeping, not behaviour under test — the
 // store's contract is covered entirely by the nine assertions above.
 //
-// The retry budget is deliberately tiny. Where the handle is released promptly,
-// half a second is plenty and the directory goes away. Where it is not — Windows
-// with an antivirus scanner holding a just-closed libsql file, measured past 15s
-// here — no realistic budget wins that race, so a larger one only burns time on
-// every single run to achieve nothing. Give up fast; the OS reclaims its own
-// temp directory.
+// No retry budget: measured never to win this race on this platform. Windows
+// with an antivirus scanner holding a just-closed libsql file kept the handle
+// past 15s, and a 100/200/300/400/500ms backoff never once succeeded — it only
+// burned ~1.5s per test for nothing. Cleanup is a single best-effort attempt;
+// the OS reclaims its own temp directory regardless.
 afterAll(() => {
   try {
-    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 0 })
   } catch {
     // Handle still held. Nothing to do, and nothing worth failing a suite over.
   }

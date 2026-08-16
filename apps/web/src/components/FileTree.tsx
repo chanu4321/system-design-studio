@@ -1,5 +1,7 @@
+import type { FileEntry } from '@sd/shared'
+
 type Props = {
-  files: { path: string; size: number }[]
+  files: FileEntry[]
   selected: string | null
   onSelect: (path: string) => void
 }

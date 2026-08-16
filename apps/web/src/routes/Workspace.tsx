@@ -1,5 +1,6 @@
 import MonacoEditor from '@monaco-editor/react'
 import { useCallback, useEffect, useState } from 'react'
+import type { FileEntry } from '@sd/shared'
 import { FileTree } from '../components/FileTree.js'
 import type { ApiClient } from '../api/client.js'
 
@@ -20,7 +21,7 @@ function monacoLanguage(path: string | null): string {
 }
 
 export function Workspace({ client, projectId, onBack }: Props) {
-  const [files, setFiles] = useState<{ path: string; size: number }[]>([])
+  const [files, setFiles] = useState<FileEntry[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [content, setContent] = useState('')
   const [savedContent, setSavedContent] = useState('')

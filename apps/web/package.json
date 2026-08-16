@@ -13,7 +13,6 @@
     "@sd/shared": "workspace:*",
     "react": "^19",
     "react-dom": "^19",
-    "react-router-dom": "^7",
     "@monaco-editor/react": "^4"
   },
   "devDependencies": {

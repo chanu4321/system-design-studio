@@ -4,9 +4,8 @@ import type {
   FileListResponse,
   ProjectListResponse,
   ProjectSummaryDto,
+  ViewKind,
 } from '@sd/shared'
-
-type ViewKind = 'lld' | 'hld'
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {

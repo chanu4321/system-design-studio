@@ -12,7 +12,6 @@
     "@sd/shared": "workspace:*",
     "@sd/store": "workspace:*",
     "fastify": "^5",
-    "@fastify/cors": "^10",
     "zod": "^3",
     "dotenv": "^16"
   }

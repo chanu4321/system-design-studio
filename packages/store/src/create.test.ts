@@ -8,11 +8,12 @@ const dir = mkdtempSync(join(tmpdir(), 'sd-create-'))
 
 // Same Windows file-lock race documented in sqlite.test.ts: the sqlite
 // fallback path here uses the same libsql client, so cleanup can hit an
-// EBUSY from a not-yet-released handle. Retry briefly, then give up —
-// cleanup is housekeeping, not the behaviour under test.
+// EBUSY from a not-yet-released handle. No retry: measured never to win this
+// race on this platform, so a backoff only burns time — cleanup is
+// housekeeping, not the behaviour under test.
 afterAll(() => {
   try {
-    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 0 })
   } catch {
     // Handle still held. Nothing to do, and nothing worth failing a suite over.
   }

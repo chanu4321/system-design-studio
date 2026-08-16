@@ -1,10 +1,10 @@
 import { mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
-import type { ViewKind } from '@sd/shared'
+import type { FileEntry, ViewKind } from '@sd/shared'
 
 export class PathEscapeError extends Error {}
 
-export type FileEntry = { path: string; size: number }
+export type { FileEntry }
 
 /**
  * Skipped when listing a view's files — build output and VCS metadata are not

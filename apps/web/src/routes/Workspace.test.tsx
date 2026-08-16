@@ -96,7 +96,6 @@ describe('Workspace', () => {
     expect(confirm).toHaveBeenCalled()
     // Declined: the dirty buffer is still the one on screen.
     expect(await screen.findByText(/unsaved/i)).toBeTruthy()
-    confirm.mockRestore()
   })
 
   it('does not prompt when switching files with no unsaved changes', async () => {
@@ -114,7 +113,6 @@ describe('Workspace', () => {
     await userEvent.click(screen.getByText('src/Ticket.java'))
 
     expect(confirm).not.toHaveBeenCalled()
-    confirm.mockRestore()
   })
 
   it('prompts before leaving with unsaved changes and stays when declined', async () => {
@@ -130,6 +128,5 @@ describe('Workspace', () => {
 
     expect(confirm).toHaveBeenCalled()
     expect(onBack).not.toHaveBeenCalled()
-    confirm.mockRestore()
   })
 })

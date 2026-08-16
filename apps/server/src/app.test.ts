@@ -28,11 +28,14 @@ afterEach(async () => {
   await store.close()
   // Closing the store is necessary but not sufficient on Windows: the just-closed
   // sqlite client can hold its file handle a beat longer than store.close() takes
-  // to resolve. Confirmed by measurement — removing the retry after adding the
-  // close above still produced EBUSY on every test. See
-  // packages/store/src/sqlite.test.ts:21-27 for the same non-fatal retry.
+  // to resolve. No retry budget here: measured never to win this race on this
+  // platform — a 100/200/300/400/500ms backoff was exhausted on every single
+  // test (128 leaked sd-app-* dirs in %TEMP%, ~1.55s added per test, ~24s per
+  // suite run, for zero successful retries). Cleanup is a single best-effort
+  // attempt; the OS reclaims its own temp directory. See
+  // packages/store/src/sqlite.test.ts:21-27 for the same non-fatal cleanup.
   try {
-    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 0 })
   } catch {
     // Handle still held. Nothing to do, and nothing worth failing a suite over.
   }
