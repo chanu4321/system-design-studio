@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { ViewKind } from '@sd/shared'
 
@@ -23,28 +23,38 @@ const IGNORED_DIRS = new Set(['.git', 'node_modules', 'out', 'build', 'target', 
  * stripping `..` segments and continuing — a sanitise-and-proceed strategy is
  * how these bugs come back later.
  *
- * The check is structural, not a list of known-bad substrings: after
+ * The core check is structural, not a list of known-bad substrings: after
  * resolving `relPath` against the view root, the result must land strictly
- * inside it, decided purely by comparing resolved absolute paths.
+ * inside it, decided purely by comparing resolved absolute paths. A few
+ * syntactic pre-checks run first; see the comment at each for exactly what it
+ * adds beyond that structural check, since more than one of them turned out
+ * to guard something narrower than "prevents escape."
  *
- * One Windows-specific input needs a syntactic pre-check rather than relying
- * on that structural comparison alone: a drive-relative path such as `C:foo`
- * (a drive letter with no separator after the colon) is not absolute by
- * Node's own definition, and `path.resolve` does not always fold it back
- * against the supplied base. When the referenced drive differs from the
- * base's drive, Windows resolves it against that *other* drive's current
- * directory — a location this process does not control and that has nothing
- * to do with the view. Verified experimentally: resolving `C:foo` against a
- * view rooted on `D:` lands wherever this process's cwd on `C:` happens to
- * be, entirely outside any project. Rejecting anything with a leading drive
- * letter, absolute or not, closes that off before the structural check ever
- * runs.
+ * This function is lexical only — it says nothing about a reparse point
+ * (junction/symlink) already sitting inside the view and pointing elsewhere
+ * on disk. `readViewFile`/`writeViewFile` layer a real-path check on top of
+ * this one for that reason; see `assertRealPathInView`.
  */
 export function resolveInView(projectDir: string, view: ViewKind, relPath: string): string {
-  if (!relPath || relPath.trim() === '') {
-    throw new PathEscapeError('Empty path')
+  // Typed as string, but this value arrives from an HTTP body. A non-string must
+  // fail as a PathEscapeError so the route answers 400, not 500 on a TypeError.
+  if (typeof relPath !== 'string' || relPath.trim() === '') {
+    throw new PathEscapeError('Path must be a non-empty string')
   }
+  // A drive-qualified path must never be silently reinterpreted as view-relative.
+  // Note what this guard does and does not do: `resolve(viewRoot, 'C:foo')` folds
+  // to `<viewRoot>/foo` when the view is on drive C, so without it the caller's
+  // `C:foo` would quietly come to mean `foo`. The *cross-drive* case needs no help
+  // from here — `relative()` cannot express a cross-device relation, so it returns
+  // an absolute path that the structural check below rejects. This guard prevents
+  // a semantic misreading; the structural check is what prevents escape.
   if (isAbsolute(relPath) || /^[a-zA-Z]:/.test(relPath)) {
+    throw new PathEscapeError(`Path "${relPath}" is outside the view`)
+  }
+  // ':' cannot occur in a Windows filename. Allowing it lets a caller write an
+  // NTFS alternate data stream attached to an in-view file — contained, but
+  // invisible to listViewFiles and unreachable by any other call.
+  if (relPath.includes(':')) {
     throw new PathEscapeError(`Path "${relPath}" is outside the view`)
   }
 
@@ -52,20 +62,64 @@ export function resolveInView(projectDir: string, view: ViewKind, relPath: strin
   const target = resolve(viewRoot, relPath)
   const rel = relative(viewRoot, target)
 
-  // rel === '' means relPath normalised to the view root itself (e.g. '.' or
-  // 'src/..') — a caller must always name a file, never the directory.
-  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+  // Compare against a '..' segment, not a '..' prefix: a bare startsWith('..')
+  // also rejects legitimate filenames such as '..hidden.java'. rel === '' means
+  // relPath normalised to the view root itself (e.g. '.' or 'src/..'), which is
+  // refused — but that is the only directory this function refuses. A relPath
+  // naming an ordinary subdirectory (e.g. 'src', or 'src/.') resolves
+  // successfully here; this function does not otherwise distinguish a file
+  // target from a directory target, and readFile/writeFile fail on their own
+  // if the resolved target turns out to be a directory.
+  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
     throw new PathEscapeError(`Path "${relPath}" is outside the view`)
   }
   return target
+}
+
+/** Deepest ancestor of `path` that exists, fully resolved through any links. */
+async function nearestRealPath(path: string): Promise<string> {
+  let probe = path
+  for (;;) {
+    try {
+      return await realpath(probe)
+    } catch {
+      const parent = resolve(probe, '..')
+      if (parent === probe) return probe
+      probe = parent
+    }
+  }
+}
+
+/**
+ * Lexical containment alone is not enough. A reparse point already inside the
+ * view — a junction or symlink, creatable by any unelevated local user — is an
+ * ordinary-looking relative path with no `..` and no drive letter that resolves,
+ * at the filesystem level, somewhere else entirely. A caller cannot create one
+ * through this API, but it can traverse one that exists.
+ *
+ * The target may not exist yet, so resolve its deepest existing ancestor.
+ */
+async function assertRealPathInView(viewRoot: string, target: string): Promise<void> {
+  const realRoot = await nearestRealPath(viewRoot)
+  const realTarget = await nearestRealPath(target)
+  const rel = relative(realRoot, realTarget)
+
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new PathEscapeError('Path resolves outside the view')
+  }
 }
 
 async function walk(root: string, current: string, out: FileEntry[]): Promise<void> {
   let entries
   try {
     entries = await readdir(current, { withFileTypes: true })
-  } catch {
-    return
+  } catch (err) {
+    // A missing directory is an empty listing. Anything else — EACCES, EMFILE —
+    // would otherwise be presented to the user as a complete listing that is
+    // silently short.
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTDIR') return
+    throw err
   }
 
   for (const entry of entries) {
@@ -92,7 +146,9 @@ export async function listViewFiles(projectDir: string, view: ViewKind): Promise
   const root = resolve(projectDir, view)
   const out: FileEntry[] = []
   await walk(root, root, out)
-  out.sort((a, b) => a.path.localeCompare(b.path))
+  // Plain codepoint order, not localeCompare: collation is locale-aware and
+  // varies with the ICU build, so it is not a deterministic sort across machines.
+  out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
   return out
 }
 
@@ -101,7 +157,10 @@ export async function readViewFile(
   view: ViewKind,
   relPath: string,
 ): Promise<string> {
-  return readFile(resolveInView(projectDir, view, relPath), 'utf8')
+  const viewRoot = resolve(projectDir, view)
+  const target = resolveInView(projectDir, view, relPath)
+  await assertRealPathInView(viewRoot, target)
+  return readFile(target, 'utf8')
 }
 
 /**
@@ -117,7 +176,10 @@ export async function writeViewFile(
   relPath: string,
   content: string,
 ): Promise<void> {
+  const viewRoot = resolve(projectDir, view)
   const target = resolveInView(projectDir, view, relPath)
+  // Checked before anything touches the filesystem — never mkdir first.
+  await assertRealPathInView(viewRoot, target)
   await mkdir(resolve(target, '..'), { recursive: true })
   await writeFile(target, content, 'utf8')
 }

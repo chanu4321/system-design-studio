@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { listViewFiles, readViewFile, resolveInView, writeViewFile } from './files.js'
+import { PathEscapeError, listViewFiles, readViewFile, resolveInView, writeViewFile } from './files.js'
 
 let dir: string
 beforeEach(() => {
@@ -38,24 +38,45 @@ describe('resolveInView', () => {
   })
 
   // Decision #2 in the task brief calls out drive-relative paths (`C:foo`) as
-  // a syntax that must be rejected, distinct from a fully-qualified absolute
-  // path. Verified experimentally: on Windows, `path.resolve` does not
-  // reliably fold a drive-relative path back against the supplied base — when
-  // the referenced drive differs from the view's drive, it resolves against
-  // that other drive's current directory instead, landing outside the view
-  // (and outside any project) without ever going through `..`. The
-  // relative-path structural check alone does not catch this; it needs its
-  // own guard.
-  it('rejects a drive-relative path', () => {
+  // a syntax that must be rejected. This does NOT guard against an escape:
+  // `relative()` cannot express a cross-device relation, so when the
+  // referenced drive differs from the view's drive, the structural check
+  // below already rejects it on its own (confirmed by reproducing the
+  // reviewer's cross-drive scenario). What this guard actually prevents is a
+  // *same-drive* semantic misreading — without it, `resolve(viewRoot, 'C:foo')`
+  // silently folds to `<viewRoot>/foo`, so a caller's `C:foo` would quietly
+  // come to mean `foo` instead of being refused.
+  it('rejects a drive-relative path rather than silently treating it as view-relative', () => {
     expect(() => resolveInView(dir, 'lld', 'C:foo')).toThrow(/outside/i)
   })
 
-  // Decision #3: a caller must always name a file, never the directory —
-  // rejected the same way whether the path is empty or merely normalises
-  // back to the view root.
+  // Decision #3: a path that normalises to the view root itself (e.g. '.' or
+  // 'src/..') is rejected the same way an empty path is. This is narrower
+  // than "must always name a file, never a directory" — an ordinary
+  // subdirectory such as 'src' resolves successfully through this function;
+  // only the root itself is refused.
   it('rejects a path that normalises to the view root itself', () => {
     expect(() => resolveInView(dir, 'lld', '.')).toThrow(/outside/i)
     expect(() => resolveInView(dir, 'lld', 'src/..')).toThrow(/outside/i)
+  })
+
+  it('throws PathEscapeError specifically, not a plain Error', () => {
+    expect(() => resolveInView(dir, 'lld', '../../x')).toThrow(PathEscapeError)
+  })
+
+  it('rejects a non-string path', () => {
+    expect(() => resolveInView(dir, 'lld', 123 as unknown as string)).toThrow(PathEscapeError)
+    expect(() => resolveInView(dir, 'lld', {} as unknown as string)).toThrow(PathEscapeError)
+  })
+
+  it('rejects an NTFS alternate data stream', () => {
+    expect(() => resolveInView(dir, 'lld', 'src/Vehicle.java:hidden')).toThrow(PathEscapeError)
+  })
+
+  it('accepts a filename that merely begins with two dots', () => {
+    expect(resolveInView(dir, 'lld', 'src/..hidden.java')).toBe(
+      join(dir, 'lld', 'src', '..hidden.java'),
+    )
   })
 })
 
@@ -98,5 +119,25 @@ describe('readViewFile / writeViewFile', () => {
 
   it('refuses to write outside the view', async () => {
     await expect(writeViewFile(dir, 'lld', '../escape.java', 'x')).rejects.toThrow(/outside/i)
+  })
+})
+
+describe('reparse points', () => {
+  it('refuses to read through a junction that leaves the view', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'sd-outside-'))
+    writeFileSync(join(outside, 'secret.txt'), 'SECRET')
+    symlinkSync(outside, join(dir, 'lld', 'escape'), 'junction')
+
+    await expect(readViewFile(dir, 'lld', 'escape/secret.txt')).rejects.toThrow(PathEscapeError)
+    rmSync(outside, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  })
+
+  it('refuses to write through a junction that leaves the view', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'sd-outside-'))
+    symlinkSync(outside, join(dir, 'lld', 'escape2'), 'junction')
+
+    await expect(writeViewFile(dir, 'lld', 'escape2/owned.txt', 'x')).rejects.toThrow(PathEscapeError)
+    expect(existsSync(join(outside, 'owned.txt'))).toBe(false)
+    rmSync(outside, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   })
 })
