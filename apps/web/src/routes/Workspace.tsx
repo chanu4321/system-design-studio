@@ -28,6 +28,15 @@ export function Workspace({ client, projectId, onBack }: Props) {
 
   const dirty = selected !== null && content !== savedContent
 
+  /**
+   * Losing an edit by switching files or navigating away is the same silent data
+   * loss as a save that lies about succeeding — and far more frequent. Ask before
+   * discarding.
+   */
+  function confirmDiscard(): boolean {
+    return !dirty || window.confirm('You have unsaved changes. Discard them?')
+  }
+
   const refreshFiles = useCallback(async () => {
     try {
       setFiles((await client.listFiles(projectId, 'lld')).files)
@@ -41,6 +50,8 @@ export function Workspace({ client, projectId, onBack }: Props) {
   }, [refreshFiles])
 
   async function open(path: string) {
+    if (path === selected) return
+    if (!confirmDiscard()) return
     try {
       const file = await client.readFile(projectId, 'lld', path)
       setSelected(path)
@@ -69,7 +80,12 @@ export function Workspace({ client, projectId, onBack }: Props) {
   return (
     <div className="workspace">
       <header>
-        <button type="button" onClick={onBack}>
+        <button
+          type="button"
+          onClick={() => {
+            if (confirmDiscard()) onBack()
+          }}
+        >
           Back
         </button>
         <button type="button" onClick={() => void save()} disabled={!dirty}>
@@ -87,7 +103,10 @@ export function Workspace({ client, projectId, onBack }: Props) {
             height="100%"
             language={monacoLanguage(selected)}
             value={content}
-            onChange={(value) => setContent(value ?? '')}
+            onChange={(value) => {
+              setContent(value ?? '')
+              setError(null)
+            }}
             options={{ minimap: { enabled: false }, fontSize: 14 }}
           />
         ) : (

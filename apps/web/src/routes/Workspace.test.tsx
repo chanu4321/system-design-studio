@@ -54,6 +54,7 @@ describe('Workspace', () => {
     render(<Workspace client={client} projectId={ID} onBack={vi.fn()} />)
     await userEvent.click(await screen.findByText('src/Vehicle.java'))
     await screen.findByLabelText('editor')
+    expect((screen.getByRole('button', { name: /save/i }) as HTMLButtonElement).disabled).toBe(true)
     await userEvent.click(screen.getByRole('button', { name: /save/i }))
     expect(client.writeFile).not.toHaveBeenCalled()
   })
@@ -74,5 +75,61 @@ describe('Workspace', () => {
     render(<Workspace client={client} projectId={ID} onBack={onBack} />)
     await userEvent.click(await screen.findByRole('button', { name: /back/i }))
     expect(onBack).toHaveBeenCalled()
+  })
+
+  it('prompts before discarding unsaved changes when switching files', async () => {
+    ;(client.listFiles as ReturnType<typeof vi.fn>).mockResolvedValue({
+      files: [
+        { path: 'src/Vehicle.java', size: 20 },
+        { path: 'src/Ticket.java', size: 10 },
+      ],
+    })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+
+    render(<Workspace client={client} projectId={ID} onBack={vi.fn()} />)
+    await userEvent.click(await screen.findByText('src/Vehicle.java'))
+    await screen.findByLabelText('editor')
+    await userEvent.type(screen.getByLabelText('editor'), ' ')
+
+    await userEvent.click(screen.getByText('src/Ticket.java'))
+
+    expect(confirm).toHaveBeenCalled()
+    // Declined: the dirty buffer is still the one on screen.
+    expect(await screen.findByText(/unsaved/i)).toBeTruthy()
+    confirm.mockRestore()
+  })
+
+  it('does not prompt when switching files with no unsaved changes', async () => {
+    ;(client.listFiles as ReturnType<typeof vi.fn>).mockResolvedValue({
+      files: [
+        { path: 'src/Vehicle.java', size: 20 },
+        { path: 'src/Ticket.java', size: 10 },
+      ],
+    })
+    const confirm = vi.spyOn(window, 'confirm')
+
+    render(<Workspace client={client} projectId={ID} onBack={vi.fn()} />)
+    await userEvent.click(await screen.findByText('src/Vehicle.java'))
+    await screen.findByLabelText('editor')
+    await userEvent.click(screen.getByText('src/Ticket.java'))
+
+    expect(confirm).not.toHaveBeenCalled()
+    confirm.mockRestore()
+  })
+
+  it('prompts before leaving with unsaved changes and stays when declined', async () => {
+    const onBack = vi.fn()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+
+    render(<Workspace client={client} projectId={ID} onBack={onBack} />)
+    await userEvent.click(await screen.findByText('src/Vehicle.java'))
+    await screen.findByLabelText('editor')
+    await userEvent.type(screen.getByLabelText('editor'), ' ')
+
+    await userEvent.click(screen.getByRole('button', { name: /back/i }))
+
+    expect(confirm).toHaveBeenCalled()
+    expect(onBack).not.toHaveBeenCalled()
+    confirm.mockRestore()
   })
 })
