@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { MetadataStore, ProjectRecord } from './types.js'
 
 export function describeMetadataStore(name: string, factory: () => Promise<MetadataStore>): void {
@@ -22,7 +22,11 @@ export function describeMetadataStore(name: string, factory: () => Promise<Metad
       for (const p of await store.listProjects()) await store.deleteProject(p.id)
     })
 
-    afterAll(async () => {
+    // Each test closes the store it opened. Without this the suite abandons one
+    // unclosed store per test: a leaked OS file handle on SQLite, and an
+    // abandoned server connection on Postgres, where it would run into
+    // connection limits long before a leaked handle became visible.
+    afterEach(async () => {
       await store?.close()
     })
 

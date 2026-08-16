@@ -9,26 +9,19 @@ const dir = mkdtempSync(join(tmpdir(), 'sd-store-'))
 
 describeMetadataStore('sqlite', async () => createSqliteStore(join(dir, 'test.db')))
 
-// On Windows, @libsql/client's native binding doesn't release its file
-// handle synchronously when close() returns — the OS-level unlock happens on
-// a background thread whose timing is unpredictable and, empirically, has no
-// bound that's both reliable and cheap: it ranged from well under a second to
-// upward of ten seconds across otherwise-identical runs in the same session
-// (consistent with antivirus scanning each newly-written db file, worse the
-// more files are created in a short window). This is best-effort tidying of
-// a throwaway OS temp directory, not part of the store's behaviour under
-// test: retry briefly to catch the common fast case, but never fail the
-// suite over it — on persistent EBUSY the OS reclaims the temp dir on its
-// own, so give up quietly rather than stall every run for the slow case.
-afterAll(async () => {
-  for (let attempt = 1; attempt <= 20; attempt++) {
-    try {
-      rmSync(dir, { recursive: true, force: true })
-      return
-    } catch (err) {
-      const busy = err instanceof Error && 'code' in err && err.code === 'EBUSY'
-      if (!busy) throw err
-      await new Promise((r) => setTimeout(r, 100))
-    }
+// Removing the temp directory is housekeeping, not behaviour under test — the
+// store's contract is covered entirely by the nine assertions above.
+//
+// The retry budget is deliberately tiny. Where the handle is released promptly,
+// half a second is plenty and the directory goes away. Where it is not — Windows
+// with an antivirus scanner holding a just-closed libsql file, measured past 15s
+// here — no realistic budget wins that race, so a larger one only burns time on
+// every single run to achieve nothing. Give up fast; the OS reclaims its own
+// temp directory.
+afterAll(() => {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  } catch {
+    // Handle still held. Nothing to do, and nothing worth failing a suite over.
   }
 })
