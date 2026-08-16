@@ -41,6 +41,25 @@ export function reconcileViews(declared: Views, present: Views): Views {
   return out
 }
 
+/**
+ * Structural comparison, deliberately not `JSON.stringify`. Stringify would make
+ * "did anything change?" depend on key order, and therefore on `VIEW_KINDS` and
+ * `viewsSchema` happening to declare their kinds in the same order — a coupling
+ * nothing enforces. Add a third view kind to one and not the other and every
+ * multi-view project would silently rewrite `project.json` on open.
+ *
+ * Extend this when `ViewMeta` gains a field.
+ */
+export function viewsEqual(a: Views, b: Views): boolean {
+  for (const kind of VIEW_KINDS) {
+    const x = a[kind]
+    const y = b[kind]
+    if ((x === undefined) !== (y === undefined)) return false
+    if (x && y && (x.language !== y.language || x.entryPoint !== y.entryPoint)) return false
+  }
+  return true
+}
+
 async function detectLanguage(viewDir: string): Promise<Language | undefined> {
   let entries: string[]
   try {
@@ -111,7 +130,7 @@ export async function loadManifest(projectDir: string): Promise<ProjectManifest>
 
   // Only rewrite when the reconciliation actually changed something, so that
   // merely opening a project does not dirty the user's git working tree.
-  if (JSON.stringify(manifest.views) !== JSON.stringify(reconciled)) {
+  if (!viewsEqual(manifest.views, reconciled)) {
     await writeManifest(projectDir, next)
   }
   return next

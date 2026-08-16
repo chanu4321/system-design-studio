@@ -1,9 +1,9 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ProjectManifest } from '@sd/shared'
+import type { ProjectManifest, Views } from '@sd/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { detectViews, loadManifest, reconcileViews, writeManifest } from './manifest.js'
+import { detectViews, loadManifest, reconcileViews, viewsEqual, writeManifest } from './manifest.js'
 
 const ID = '3f2504e0-4f89-41d3-9a0c-0305e82c3301'
 let dir: string
@@ -44,6 +44,30 @@ describe('reconcileViews', () => {
 
   it('returns an empty map when nothing is on disk', () => {
     expect(reconcileViews({ lld: { language: 'java' } }, {})).toEqual({})
+  })
+})
+
+describe('viewsEqual', () => {
+  it('ignores key insertion order', () => {
+    // Built in opposite orders on purpose. A JSON.stringify comparison would
+    // call these different and rewrite project.json on every open.
+    const a: Views = {}
+    a.hld = {}
+    a.lld = { language: 'java' }
+    const b: Views = { lld: { language: 'java' }, hld: {} }
+    expect(viewsEqual(a, b)).toBe(true)
+  })
+
+  it('detects a differing language', () => {
+    expect(viewsEqual({ lld: { language: 'java' } }, { lld: { language: 'cpp' } })).toBe(false)
+  })
+
+  it('detects a differing entryPoint', () => {
+    expect(viewsEqual({ lld: { entryPoint: 'Main' } }, { lld: {} })).toBe(false)
+  })
+
+  it('detects an added or removed view', () => {
+    expect(viewsEqual({ lld: {} }, { lld: {}, hld: {} })).toBe(false)
   })
 })
 
