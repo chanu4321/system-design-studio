@@ -1,0 +1,13 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { margin: 0; }
+.library { padding: 1.5rem; }
+.grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); list-style: none; padding: 0; }
+.card { display: flex; flex-direction: column; gap: .5rem; width: 100%; padding: 1rem; text-align: left; cursor: pointer; border: 1px solid currentColor; border-radius: 8px; background: transparent; color: inherit; }
+.card-title { font-weight: 600; }
+.badges em { font-style: normal; font-size: .75rem; border: 1px solid currentColor; border-radius: 4px; padding: 0 .35rem; margin-right: .25rem; }
+.workspace { display: grid; grid-template-columns: 200px 1fr; grid-template-rows: auto 1fr; height: 100vh; }
+.workspace header { grid-column: 1 / -1; display: flex; align-items: center; gap: 1rem; padding: .5rem 1rem; border-bottom: 1px solid currentColor; }
+.file-tree { border-right: 1px solid currentColor; overflow: auto; padding: .5rem; }
+.file-tree ul { list-style: none; margin: 0; padding: 0; }
+.file-tree button { background: none; border: 0; color: inherit; cursor: pointer; text-align: left; width: 100%; padding: .15rem .25rem; }
+.file-tree button[aria-current='true'] { font-weight: 700; }
