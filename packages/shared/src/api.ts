@@ -33,3 +33,7 @@ export type FileEntry = { path: string; size: number }
 
 export type FileListResponse = { files: FileEntry[] }
 export type FileContentResponse = { path: string; content: string; mtimeMs: number }
+
+export type ViewContentsResponse = {
+  files: { path: string; content: string; mtimeMs: number }[]
+}

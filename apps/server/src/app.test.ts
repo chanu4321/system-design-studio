@@ -233,3 +233,44 @@ describe('files', () => {
     expect(res.statusCode).toBe(415)
   })
 })
+
+describe('bulk contents', () => {
+  it('returns every file in the view with its content and mtime', async () => {
+    const id = (await create('Parking Lot')).json().id
+    for (const [path, content] of [
+      ['src/Vehicle.java', 'class Vehicle {}'],
+      ['src/model/Ticket.java', 'class Ticket {}'],
+    ]) {
+      await app.inject({
+        method: 'PUT',
+        url: `/api/projects/${id}/views/lld/file`,
+        payload: { path, content },
+      })
+    }
+
+    const res = await app.inject({ method: 'GET', url: `/api/projects/${id}/views/lld/contents` })
+    expect(res.statusCode).toBe(200)
+
+    const files = res.json().files as { path: string; content: string; mtimeMs: number }[]
+    expect(files.map((f) => f.path)).toEqual(['src/Vehicle.java', 'src/model/Ticket.java'])
+    expect(files[0]?.content).toBe('class Vehicle {}')
+    expect(files[0]?.mtimeMs).toBeGreaterThan(0)
+  })
+
+  it('returns an empty list for a view with no files', async () => {
+    const id = (await create('Parking Lot')).json().id
+    const res = await app.inject({ method: 'GET', url: `/api/projects/${id}/views/lld/contents` })
+    expect(res.json()).toEqual({ files: [] })
+  })
+
+  it('returns 400 for an unknown view kind', async () => {
+    const id = (await create('Parking Lot')).json().id
+    const res = await app.inject({ method: 'GET', url: `/api/projects/${id}/views/bogus/contents` })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('returns 404 for an unknown project', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/projects/nope/views/lld/contents' })
+    expect(res.statusCode).toBe(404)
+  })
+})

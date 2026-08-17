@@ -3,6 +3,7 @@ import {
   writeFileBodySchema,
   type FileContentResponse,
   type FileListResponse,
+  type ViewContentsResponse,
 } from '@sd/shared'
 import type { FastifyInstance } from 'fastify'
 import type { ServerConfig } from '../config.js'
@@ -105,4 +106,24 @@ export function registerFileRoutes(app: FastifyInstance, deps: { config: ServerC
       throw err
     }
   })
+
+  app.get(
+    '/api/projects/:id/views/:view/contents',
+    async (req, reply): Promise<ViewContentsResponse | void> => {
+      const target = await resolveTarget(req.params, reply)
+      if (!target) return
+
+      // listViewFiles has already applied the extension and size guards, so
+      // everything it names is safe to read and small enough to send.
+      const entries = await listViewFiles(target.dir, target.view)
+      // Annotated rather than inferred: an untyped `[]` accumulator is how a
+      // literal quietly widens and the response type stops matching the shared one.
+      const files: ViewContentsResponse['files'] = []
+      for (const entry of entries) {
+        const { content, mtimeMs } = await readViewFileWithMeta(target.dir, target.view, entry.path)
+        files.push({ path: entry.path, content, mtimeMs })
+      }
+      return { files }
+    },
+  )
 }
