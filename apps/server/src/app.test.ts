@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createSqliteStore, type MetadataStore } from '@sd/store'
@@ -275,6 +275,29 @@ describe('files', () => {
     const after = (await app.inject({ method: 'GET', url: '/api/projects' })).json().projects[0]
       .updatedAt
     expect(after).toBeGreaterThan(before)
+  })
+
+  it('404s on a write for a project deleted from disk instead of resurrecting its folder', async () => {
+    const created = await create('Parking Lot')
+    const id = created.json().id
+    const projectDir = join(dir, 'projects', created.json().path)
+
+    // Prime the cache with a summary for this project before its directory
+    // disappears out from under it, so the write below hits a stale cache
+    // entry rather than a fresh scan that would already know it's gone.
+    await app.inject({ method: 'GET', url: `/api/projects/${id}/views/lld/files` })
+
+    rmSync(projectDir, { recursive: true, force: true })
+
+    const res = await app.inject({
+      method: 'PUT',
+      url: `/api/projects/${id}/views/lld/file`,
+      payload: { path: 'src/Vehicle.java', content: 'class Vehicle {}' },
+    })
+    expect(res.statusCode).toBe(404)
+    // The point of the self-heal: writeViewFile's recursive mkdir must never
+    // run against a stale directory and resurrect the deleted project.
+    expect(existsSync(projectDir)).toBe(false)
   })
 })
 

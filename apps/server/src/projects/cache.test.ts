@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createScanCache } from './cache.js'
-import { createProject } from './scan.js'
+import { createProject, scanProjects, type ScanResult } from './scan.js'
 
 let root: string
 beforeEach(() => {
@@ -52,11 +52,56 @@ describe('createScanCache', () => {
   })
 
   it('does not cache a failed scan', async () => {
-    const cache = createScanCache(join(root, 'missing'))
-    const first = await cache.get()
-    await createProject(join(root, 'missing'), { title: 'A', views: {} })
-    cache.invalidate()
+    // scanProjects itself can't be made to reject on demand from here — a
+    // missing root is a legitimate empty result, not a rejection — so the
+    // injected scan function is what actually produces the failure.
+    await createProject(root, { title: 'A', views: {} })
+    let callCount = 0
+    const scan = (dir: string): Promise<ScanResult> => {
+      callCount++
+      return callCount === 1 ? Promise.reject(new Error('scan boom')) : scanProjects(dir)
+    }
+    const cache = createScanCache(root, scan)
+
+    await expect(cache.get()).rejects.toThrow('scan boom')
+
+    // The rejection must not have been cached: the next get() scans for real
+    // and finds the project that was there all along.
     expect((await cache.get()).projects).toHaveLength(1)
-    expect(first.projects).toHaveLength(0)
+  })
+
+  it('discards a scan superseded by an invalidate that lands before it resolves', async () => {
+    await createProject(root, { title: 'A', views: {} })
+    // What the in-flight scan below "saw": the world before B existed.
+    const staleResult = await scanProjects(root)
+
+    let resolveFirstScan!: (result: ScanResult) => void
+    const firstScan = new Promise<ScanResult>((resolve) => {
+      resolveFirstScan = resolve
+    })
+    let callCount = 0
+    const scan = (dir: string): Promise<ScanResult> => {
+      callCount++
+      return callCount === 1 ? firstScan : scanProjects(dir)
+    }
+
+    const cache = createScanCache(root, scan)
+    const pending = cache.get() // starts the controllable scan; it does not resolve yet
+
+    // A write races the in-flight scan: it completes, and its invalidate()
+    // fires, before the scan — which started before the write — resolves.
+    await createProject(root, { title: 'B', views: {} })
+    cache.invalidate()
+
+    // The superseded scan now resolves with what it saw before the write.
+    resolveFirstScan(staleResult)
+
+    // Its own caller still gets that result: a scan does not fail just
+    // because it was superseded.
+    expect((await pending).projects).toHaveLength(1)
+
+    // But the cache itself must not have been poisoned with it — the next
+    // get() has to do a real rescan and see the write.
+    expect((await cache.get()).projects).toHaveLength(2)
   })
 })

@@ -1,3 +1,5 @@
+import { stat } from 'node:fs/promises'
+import { join } from 'node:path'
 import { createProjectBodySchema, type ProjectListResponse } from '@sd/shared'
 import type { MetadataStore } from '@sd/store'
 import type { FastifyInstance } from 'fastify'
@@ -5,16 +7,51 @@ import type { ServerConfig } from '../config.js'
 import type { ScanCache } from '../projects/cache.js'
 import { loadManifest } from '../projects/manifest.js'
 import { createProject, type ProjectSummary } from '../projects/scan.js'
-import { join } from 'node:path'
 
-/** Resolves a project id to its directory via the scan cache; also the 404 gate. */
-export async function findProject(
+async function directoryExists(dir: string): Promise<boolean> {
+  try {
+    await stat(dir)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function resolveFromCache(
   deps: { config: ServerConfig; scans: ScanCache },
   id: string,
 ): Promise<{ summary: ProjectSummary; dir: string } | null> {
   const { projects } = await deps.scans.get()
   const summary = projects.find((p) => p.id === id)
   return summary ? { summary, dir: join(deps.config.projectsDir, summary.path) } : null
+}
+
+/**
+ * Resolves a project id to its directory via the scan cache; also the 404
+ * gate.
+ *
+ * The cache can be holding a summary for a directory that is already gone —
+ * deleted outside the app since the cache was last populated. Handing that
+ * stale directory to a caller is worse now than before caching existed:
+ * `writeViewFile` `mkdir`s its parents, so a write would resurrect the
+ * deleted project as a manifest-less fragment instead of 404ing. So a cache
+ * hit is verified against disk before being trusted: if the directory is
+ * gone, the cache is forced to rescan and the lookup is retried once before
+ * giving up.
+ */
+export async function findProject(
+  deps: { config: ServerConfig; scans: ScanCache },
+  id: string,
+): Promise<{ summary: ProjectSummary; dir: string } | null> {
+  const found = await resolveFromCache(deps, id)
+  if (!found) return null
+  if (await directoryExists(found.dir)) return found
+
+  // The cached summary names a directory that is no longer there. Force a
+  // fresh scan and check once more before giving up.
+  deps.scans.invalidate()
+  const retried = await resolveFromCache(deps, id)
+  return retried && (await directoryExists(retried.dir)) ? retried : null
 }
 
 /**
