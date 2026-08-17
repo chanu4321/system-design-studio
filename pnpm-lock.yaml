@@ -84,10 +84,10 @@ importers:
         specifier: workspace:*
         version: link:../model
       tree-sitter-wasms:
-        specifier: ^0.1.13
+        specifier: 0.1.13
         version: 0.1.13
       web-tree-sitter:
-        specifier: ^0.24.7
+        specifier: 0.24.7
         version: 0.24.7
 
   packages/shared:
