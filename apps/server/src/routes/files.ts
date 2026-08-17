@@ -7,6 +7,7 @@ import {
 } from '@sd/shared'
 import type { FastifyInstance } from 'fastify'
 import type { ServerConfig } from '../config.js'
+import type { ScanCache } from '../projects/cache.js'
 import {
   PathEscapeError,
   StaleWriteError,
@@ -17,8 +18,11 @@ import {
 } from '../projects/files.js'
 import { findProject } from './projects.js'
 
-export function registerFileRoutes(app: FastifyInstance, deps: { config: ServerConfig }): void {
-  const { config } = deps
+export function registerFileRoutes(
+  app: FastifyInstance,
+  deps: { config: ServerConfig; scans: ScanCache },
+): void {
+  const { config, scans } = deps
 
   const resolveTarget = async (
     params: unknown,
@@ -30,7 +34,7 @@ export function registerFileRoutes(app: FastifyInstance, deps: { config: ServerC
       reply.code(400).send({ error: `Unknown view "${view}"` })
       return null
     }
-    const found = await findProject(config, id)
+    const found = await findProject({ config, scans }, id)
     if (!found) {
       reply.code(404).send({ error: `No project with id ${id}` })
       return null
@@ -98,6 +102,9 @@ export function registerFileRoutes(app: FastifyInstance, deps: { config: ServerC
         parsed.data.content,
         parsed.data.expectedMtimeMs,
       )
+      // A new file changes this project's newest-modification time and can
+      // change its detected language — both are scan output.
+      scans.invalidate()
       return reply.code(204).send()
     } catch (err) {
       if (err instanceof PathEscapeError) return reply.code(400).send({ error: err.message })

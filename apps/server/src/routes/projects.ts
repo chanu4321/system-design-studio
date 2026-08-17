@@ -2,18 +2,19 @@ import { createProjectBodySchema, type ProjectListResponse } from '@sd/shared'
 import type { MetadataStore } from '@sd/store'
 import type { FastifyInstance } from 'fastify'
 import type { ServerConfig } from '../config.js'
+import type { ScanCache } from '../projects/cache.js'
 import { loadManifest } from '../projects/manifest.js'
-import { createProject, scanProjects, type ProjectSummary } from '../projects/scan.js'
+import { createProject, type ProjectSummary } from '../projects/scan.js'
 import { join } from 'node:path'
 
-/** Resolves a project id to its directory by scanning; also the 404 gate. */
+/** Resolves a project id to its directory via the scan cache; also the 404 gate. */
 export async function findProject(
-  config: ServerConfig,
+  deps: { config: ServerConfig; scans: ScanCache },
   id: string,
 ): Promise<{ summary: ProjectSummary; dir: string } | null> {
-  const { projects } = await scanProjects(config.projectsDir)
+  const { projects } = await deps.scans.get()
   const summary = projects.find((p) => p.id === id)
-  return summary ? { summary, dir: join(config.projectsDir, summary.path) } : null
+  return summary ? { summary, dir: join(deps.config.projectsDir, summary.path) } : null
 }
 
 /**
@@ -39,15 +40,15 @@ async function index(
 
 export function registerProjectRoutes(
   app: FastifyInstance,
-  deps: { config: ServerConfig; store: MetadataStore },
+  deps: { config: ServerConfig; store: MetadataStore; scans: ScanCache },
 ): void {
-  const { config, store } = deps
+  const { config, store, scans } = deps
 
   app.get('/api/projects', async (): Promise<ProjectListResponse> => {
     // If the projects root is unreadable, scanProjects now throws rather than
     // reporting an empty directory — which matters below, because an empty scan
     // prunes the whole index.
-    const { projects, broken } = await scanProjects(config.projectsDir)
+    const { projects, broken } = await scans.get()
 
     // Read the index once. It supplies both the values that must survive a
     // rescan and the row set the prune works from.
@@ -73,13 +74,14 @@ export function registerProjectRoutes(
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.message })
 
     const summary = await createProject(config.projectsDir, parsed.data)
+    scans.invalidate()
     await index(store, summary, null) // never opened
     return reply.code(201).send(summary)
   })
 
   app.get('/api/projects/:id', async (req, reply) => {
     const { id } = req.params as { id: string }
-    const found = await findProject(config, id)
+    const found = await findProject({ config, scans }, id)
     if (!found) return reply.code(404).send({ error: `No project with id ${id}` })
     return loadManifest(found.dir)
   })

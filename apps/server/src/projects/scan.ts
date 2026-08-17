@@ -84,8 +84,9 @@ async function claimProjectDir(
  * immediate parent. Editing existing source is this app's central workflow, so
  * reading `projectDir`'s mtime would leave "last edited" frozen at creation.
  *
- * The walk is bounded by project size. If listing ever gets slow, cache the
- * scan — do not make the database authoritative.
+ * The walk is bounded by project size; the wider cost of running it on every
+ * request is addressed by memoising the whole scan (see `cache.ts`), not by
+ * making the database authoritative.
  */
 async function newestMtime(root: string): Promise<number> {
   let newest = (await stat(root)).mtimeMs

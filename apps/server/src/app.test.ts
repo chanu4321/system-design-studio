@@ -92,8 +92,9 @@ describe('projects', () => {
 
   it('prunes index rows for a project deleted from disk', async () => {
     const created = await create('Parking Lot')
-    await app.inject({ method: 'GET', url: '/api/projects' })
-
+    // No priming GET here: POST already indexes the project into the store
+    // directly, and a GET first would cache the pre-deletion scan — the cache
+    // has no way to observe a deletion made outside the app, by design.
     rmSync(join(dir, 'projects', created.json().path), { recursive: true, force: true })
 
     const list = await app.inject({ method: 'GET', url: '/api/projects' })
@@ -112,6 +113,13 @@ describe('projects', () => {
 
     await app.inject({ method: 'GET', url: '/api/projects' })
     expect((await store.getProject(id))?.lastOpenedAt).toBe(1_700_000_000_000)
+  })
+
+  it('reflects a newly created project in the very next listing', async () => {
+    await app.inject({ method: 'GET', url: '/api/projects' })
+    await create('Parking Lot')
+    const list = await app.inject({ method: 'GET', url: '/api/projects' })
+    expect(list.json().projects).toHaveLength(1)
   })
 })
 
@@ -232,6 +240,41 @@ describe('files', () => {
       payload: { path: 'src/lib.jar', content: 'x' },
     })
     expect(res.statusCode).toBe(415)
+  })
+
+  it('reflects a newly written file in the very next contents request', async () => {
+    const id = (await create('Parking Lot')).json().id
+    await app.inject({ method: 'GET', url: `/api/projects/${id}/views/lld/contents` })
+
+    await app.inject({
+      method: 'PUT',
+      url: `/api/projects/${id}/views/lld/file`,
+      payload: { path: 'src/Vehicle.java', content: 'class Vehicle {}' },
+    })
+
+    const res = await app.inject({ method: 'GET', url: `/api/projects/${id}/views/lld/contents` })
+    expect(res.json().files).toHaveLength(1)
+  })
+
+  // Unlike the contents request above — which reads files straight off disk
+  // regardless of the scan cache — `updatedAt` in the project listing comes
+  // entirely from the cached scan. This is the one that actually fails if the
+  // write route's `scans.invalidate()` is removed.
+  it('reflects a newer updatedAt in the project listing after a write', async () => {
+    const id = (await create('Parking Lot')).json().id
+    const before = (await app.inject({ method: 'GET', url: '/api/projects' })).json().projects[0]
+      .updatedAt
+
+    await new Promise((r) => setTimeout(r, 20))
+    await app.inject({
+      method: 'PUT',
+      url: `/api/projects/${id}/views/lld/file`,
+      payload: { path: 'src/Vehicle.java', content: 'class Vehicle {}' },
+    })
+
+    const after = (await app.inject({ method: 'GET', url: '/api/projects' })).json().projects[0]
+      .updatedAt
+    expect(after).toBeGreaterThan(before)
   })
 })
 
