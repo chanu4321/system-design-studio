@@ -120,8 +120,22 @@ export function registerFileRoutes(app: FastifyInstance, deps: { config: ServerC
       // literal quietly widens and the response type stops matching the shared one.
       const files: ViewContentsResponse['files'] = []
       for (const entry of entries) {
-        const { content, mtimeMs } = await readViewFileWithMeta(target.dir, target.view, entry.path)
-        files.push({ path: entry.path, content, mtimeMs })
+        try {
+          const { content, mtimeMs } = await readViewFileWithMeta(target.dir, target.view, entry.path)
+          files.push({ path: entry.path, content, mtimeMs })
+        } catch (err) {
+          // File disappeared or grew past the size limit since the listing:
+          // treat it as no longer part of the view and skip it.
+          const code = (err as NodeJS.ErrnoException).code
+          if (code === 'ENOENT' || code === 'ENOTDIR') {
+            continue
+          }
+          if (err instanceof UnsupportedFileError) {
+            continue
+          }
+          // All other errors are real faults; rethrow to avoid silently missing files.
+          throw err
+        }
       }
       return { files }
     },

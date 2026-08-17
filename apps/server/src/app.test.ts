@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createSqliteStore, type MetadataStore } from '@sd/store'
 import type { FastifyInstance } from 'fastify'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildApp } from './app.js'
+import * as filesModule from './projects/files.js'
 
 let dir: string
 let app: FastifyInstance
@@ -272,5 +273,43 @@ describe('bulk contents', () => {
   it('returns 404 for an unknown project', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/projects/nope/views/lld/contents' })
     expect(res.statusCode).toBe(404)
+  })
+
+  it('skips files that disappear between listing and reading', async () => {
+    const id = (await create('Parking Lot')).json().id
+
+    // Create two real files
+    for (const [path, content] of [
+      ['src/Vehicle.java', 'class Vehicle {}'],
+      ['src/model/Ticket.java', 'class Ticket {}'],
+    ]) {
+      await app.inject({
+        method: 'PUT',
+        url: `/api/projects/${id}/views/lld/file`,
+        payload: { path, content },
+      })
+    }
+
+    // Mock listViewFiles to return an extra phantom file that doesn't exist
+    const originalListViewFiles = filesModule.listViewFiles
+    vi.spyOn(filesModule, 'listViewFiles').mockImplementation(async (projectDir, view) => {
+      const realFiles = await originalListViewFiles(projectDir, view)
+      return [
+        ...realFiles,
+        { path: 'src/Phantom.java', size: 1000 }
+      ]
+    })
+
+    try {
+      const res = await app.inject({ method: 'GET', url: `/api/projects/${id}/views/lld/contents` })
+      expect(res.statusCode).toBe(200)
+
+      const files = res.json().files as { path: string; content: string; mtimeMs: number }[]
+      // Should contain only the real files, not the phantom
+      expect(files.map((f) => f.path)).toEqual(['src/Vehicle.java', 'src/model/Ticket.java'])
+      expect(files).toHaveLength(2)
+    } finally {
+      vi.restoreAllMocks()
+    }
   })
 })
