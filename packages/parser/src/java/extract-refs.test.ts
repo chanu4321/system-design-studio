@@ -42,6 +42,9 @@ describe('unwrapTypeNames', () => {
   it('does not let a type-use annotation look like a type name', () => {
     expect(unwrapTypeNames('@NonNull String')).toEqual(['String'])
   })
+  it('does not let a qualified type-use annotation look like a type name', () => {
+    expect(unwrapTypeNames('@org.foo.NonNull Vehicle')).toEqual(['Vehicle'])
+  })
 })
 
 describe('extractRefs', () => {
@@ -115,6 +118,24 @@ describe('extractRefs', () => {
 
   it('emits nothing for a file with no types', () => {
     expect(refs('package model;')).toEqual([])
+  })
+
+  // A qualified type-use annotation (`@org.foo.NonNull`) on a superclass
+  // survives whitespace-splitting as one token, and the old code stripped
+  // its package qualifier the same way it strips a real type's package —
+  // discarding the leading `@` along with `org.foo.` and leaving a bare
+  // `NonNull` that passes the identifier regex. That produced a spurious
+  // `extends` edge to a non-existent `NonNull` type, in addition to the
+  // real edge to `Vehicle`. Assert the bad edge is absent, not just that
+  // the real one is present — a test that only checks for `Vehicle` passes
+  // with the bug fully intact.
+  it('does not emit an edge for a qualified type-use annotation on a superclass', () => {
+    const out = refs('class Car extends @org.foo.NonNull Vehicle {}')
+    expect(out).toContainEqual({ fromId: 'src/A.java#Car', toName: 'Vehicle', kind: 'extends' })
+    expect(out).not.toContainEqual({ fromId: 'src/A.java#Car', toName: 'NonNull', kind: 'extends' })
+    expect(out.filter((r) => r.kind === 'extends')).toEqual([
+      { fromId: 'src/A.java#Car', toName: 'Vehicle', kind: 'extends' },
+    ])
   })
 
   it('interface constants also produce reference edges', () => {

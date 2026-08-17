@@ -40,13 +40,22 @@ const BOUND_KEYWORDS = new Set(['extends', 'super'])
  * explicitly). The same whitespace split is what lets a leading type-use
  * annotation fall away on its own: `@NonNull String` splits into `@NonNull`
  * and `String`, and `@NonNull` fails the identifier test because `@` isn't a
- * valid identifier start — no separate annotation-stripping logic needed.
+ * valid identifier start.
+ *
+ * A *qualified* annotation needs an explicit guard, though: stripping a
+ * token down to its simple name (`cleaned.slice(lastIndexOf('.') + 1)`) is
+ * exactly the operation that destroys the `@`. `@org.foo.NonNull` would
+ * otherwise reduce to a bare `NonNull` that passes the identifier regex
+ * like any real type — so `@` is rejected up front, before the qualifier is
+ * stripped, while it's still the leading character. No legitimate Java type
+ * text begins with `@`, so this can't discard a real type.
  */
 export function unwrapTypeNames(typeText: string): string[] {
   const out: string[] = []
   for (const raw of typeText.split(/[<>,\s]+/)) {
     const cleaned = raw.replace(/\[\]/g, '').trim()
     if (!cleaned) continue
+    if (cleaned.startsWith('@')) continue
     const simple = cleaned.slice(cleaned.lastIndexOf('.') + 1)
     if (BOUND_KEYWORDS.has(simple)) continue
     if (/^[A-Za-z_$][\w$]*$/.test(simple)) out.push(simple)
