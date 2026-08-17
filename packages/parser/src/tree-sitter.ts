@@ -1,4 +1,3 @@
-import { createRequire } from 'node:module'
 import Parser from 'web-tree-sitter'
 
 export type WasmPaths = { runtime: string; java: string }
@@ -50,14 +49,5 @@ export async function createParser(wasm: WasmPaths): Promise<JavaParser> {
 
   return {
     parse: (source: string) => parser.parse(source),
-  }
-}
-
-/** Node-only. The browser supplies its own URLs through Vite. */
-export function defaultWasmPaths(): WasmPaths {
-  const require = createRequire(import.meta.url)
-  return {
-    runtime: require.resolve('web-tree-sitter/tree-sitter.wasm'),
-    java: require.resolve('tree-sitter-wasms/out/tree-sitter-java.wasm'),
   }
 }

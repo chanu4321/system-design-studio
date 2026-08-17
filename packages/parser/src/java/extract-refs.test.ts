@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest'
-import { createParser, defaultWasmPaths, type JavaParser } from '../tree-sitter.js'
+import { defaultWasmPaths } from '../default-wasm-paths.js'
+import { createParser, type JavaParser } from '../tree-sitter.js'
 import { extractTypes } from './extract-types.js'
 import { extractRefs, unwrapTypeNames } from './extract-refs.js'
 

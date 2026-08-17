@@ -9,5 +9,9 @@ export default defineConfig({
     port: 5173,
     proxy: { '/api': 'http://127.0.0.1:5174' },
   },
+  // web-tree-sitter fetches these at runtime rather than importing them, so they
+  // must be real served assets, not bundled modules.
+  assetsInclude: ['**/*.wasm'],
+  optimizeDeps: { exclude: ['web-tree-sitter'] },
   test: { environment: 'jsdom', globals: true, restoreMocks: true },
 })

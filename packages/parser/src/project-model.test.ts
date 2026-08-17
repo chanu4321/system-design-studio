@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest'
-import { createParser, defaultWasmPaths, type JavaParser } from './tree-sitter.js'
+import { defaultWasmPaths } from './default-wasm-paths.js'
+import { createParser, type JavaParser } from './tree-sitter.js'
 import { createProjectModel } from './project-model.js'
 
 let parser: JavaParser

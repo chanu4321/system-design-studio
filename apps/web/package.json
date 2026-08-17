@@ -17,7 +17,9 @@
     "dagre": "^0.8.5",
     "react": "^19",
     "react-dom": "^19",
-    "reactflow": "^11.11.4"
+    "reactflow": "^11.11.4",
+    "tree-sitter-wasms": "0.1.13",
+    "web-tree-sitter": "0.24.7"
   },
   "devDependencies": {
     "@testing-library/react": "^16",

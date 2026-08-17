@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./default-wasm-paths.js": "./src/default-wasm-paths.ts"
   },
   "scripts": {
     "test": "vitest run",

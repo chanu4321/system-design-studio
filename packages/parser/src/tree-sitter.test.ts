@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createParser, defaultWasmPaths } from './tree-sitter.js'
+import { defaultWasmPaths } from './default-wasm-paths.js'
+import { createParser } from './tree-sitter.js'
 
 describe('createParser', () => {
   it('parses a Java class into a tree whose root is a program', async () => {
@@ -61,7 +62,7 @@ describe('createParser caching', () => {
     const initSpy = vi.spyOn(Parser, 'init')
     const loadSpy = vi.spyOn(Parser.Language, 'load')
     const treeSitter = await import('./tree-sitter.js')
-    const paths = treeSitter.defaultWasmPaths()
+    const paths = defaultWasmPaths()
 
     await treeSitter.createParser(paths)
     await treeSitter.createParser(paths)
@@ -75,7 +76,7 @@ describe('createParser caching', () => {
     const Parser = await freshWebTreeSitter()
     const initSpy = vi.spyOn(Parser, 'init').mockImplementationOnce(() => Promise.reject(new Error('boom')))
     const treeSitter = await import('./tree-sitter.js')
-    const paths = treeSitter.defaultWasmPaths()
+    const paths = defaultWasmPaths()
 
     await expect(treeSitter.createParser(paths)).rejects.toThrow('boom')
     const parser = await treeSitter.createParser(paths)
@@ -89,7 +90,7 @@ describe('createParser caching', () => {
     const Parser = await freshWebTreeSitter()
     const loadSpy = vi.spyOn(Parser.Language, 'load').mockImplementationOnce(() => Promise.reject(new Error('boom')))
     const treeSitter = await import('./tree-sitter.js')
-    const paths = treeSitter.defaultWasmPaths()
+    const paths = defaultWasmPaths()
 
     await expect(treeSitter.createParser(paths)).rejects.toThrow('boom')
     const parser = await treeSitter.createParser(paths)
