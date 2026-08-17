@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { PathEscapeError, listViewFiles, readViewFile, resolveInView, writeViewFile } from './files.js'
+import { MAX_FILE_BYTES, PathEscapeError, UnsupportedFileError, listViewFiles, readViewFile, resolveInView, writeViewFile } from './files.js'
 
 let dir: string
 beforeEach(() => {
@@ -139,5 +139,40 @@ describe('reparse points', () => {
     await expect(writeViewFile(dir, 'lld', 'escape2/owned.txt', 'x')).rejects.toThrow(PathEscapeError)
     expect(existsSync(join(outside, 'owned.txt'))).toBe(false)
     rmSync(outside, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  })
+})
+
+describe('file type and size guards', () => {
+  it('omits unsupported extensions from the listing', async () => {
+    writeFileSync(join(dir, 'lld', 'src', 'Vehicle.java'), 'class Vehicle {}')
+    writeFileSync(join(dir, 'lld', 'src', 'lib.jar'), 'binary-ish')
+    expect((await listViewFiles(dir, 'lld')).map((f) => f.path)).toEqual(['src/Vehicle.java'])
+  })
+
+  it('omits files over the size ceiling from the listing', async () => {
+    writeFileSync(join(dir, 'lld', 'src', 'Huge.java'), 'x'.repeat(MAX_FILE_BYTES + 1))
+    writeFileSync(join(dir, 'lld', 'src', 'Small.java'), 'class Small {}')
+    expect((await listViewFiles(dir, 'lld')).map((f) => f.path)).toEqual(['src/Small.java'])
+  })
+
+  it('refuses to read an unsupported extension', async () => {
+    writeFileSync(join(dir, 'lld', 'src', 'lib.jar'), 'x')
+    await expect(readViewFile(dir, 'lld', 'src/lib.jar')).rejects.toThrow(UnsupportedFileError)
+  })
+
+  it('refuses to read a file over the size ceiling', async () => {
+    writeFileSync(join(dir, 'lld', 'src', 'Huge.java'), 'x'.repeat(MAX_FILE_BYTES + 1))
+    await expect(readViewFile(dir, 'lld', 'src/Huge.java')).rejects.toThrow(UnsupportedFileError)
+  })
+
+  it('refuses to write an unsupported extension', async () => {
+    await expect(writeViewFile(dir, 'lld', 'src/lib.jar', 'x')).rejects.toThrow(UnsupportedFileError)
+  })
+
+  it('still accepts the supported source and text extensions', async () => {
+    for (const name of ['A.java', 'b.cpp', 'c.h', 'd.md', 'e.yaml', 'f.json', 'g.txt']) {
+      await writeViewFile(dir, 'lld', `src/${name}`, 'x')
+    }
+    expect((await listViewFiles(dir, 'lld'))).toHaveLength(7)
   })
 })

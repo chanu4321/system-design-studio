@@ -4,6 +4,32 @@ import type { FileEntry, ViewKind } from '@sd/shared'
 
 export class PathEscapeError extends Error {}
 
+export class UnsupportedFileError extends Error {}
+
+/**
+ * A view is bulk-loaded into browser memory, so an unbounded read is a real
+ * cost rather than a theoretical one. One megabyte is far past any hand-written
+ * source file and far below anything that would hurt.
+ */
+export const MAX_FILE_BYTES = 1_048_576
+
+/** Extensions a source view may contain. Anything else is not ours to open. */
+export const TEXT_EXTENSIONS = new Set([
+  '.java', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.h',
+  '.md', '.txt', '.json', '.yaml', '.yml', '.xml', '.properties', '.gradle',
+])
+
+function extensionOf(path: string): string {
+  const dot = path.lastIndexOf('.')
+  return dot === -1 ? '' : path.slice(dot).toLowerCase()
+}
+
+function assertSupported(relPath: string): void {
+  if (!TEXT_EXTENSIONS.has(extensionOf(relPath))) {
+    throw new UnsupportedFileError(`Unsupported file type: ${relPath}`)
+  }
+}
+
 export type { FileEntry }
 
 /**
@@ -128,7 +154,9 @@ async function walk(root: string, current: string, out: FileEntry[]): Promise<vo
       if (IGNORED_DIRS.has(entry.name)) continue
       await walk(root, abs, out)
     } else if (entry.isFile()) {
+      if (!TEXT_EXTENSIONS.has(extensionOf(entry.name))) continue
       const info = await stat(abs)
+      if (info.size > MAX_FILE_BYTES) continue
       // Windows yields backslashes from path.relative; the same string must
       // round-trip back into readViewFile/writeViewFile unchanged from a
       // browser, so every platform emits forward slashes.
@@ -160,6 +188,11 @@ export async function readViewFile(
   const viewRoot = resolve(projectDir, view)
   const target = resolveInView(projectDir, view, relPath)
   await assertRealPathInView(viewRoot, target)
+  assertSupported(relPath)
+  const info = await stat(target)
+  if (info.size > MAX_FILE_BYTES) {
+    throw new UnsupportedFileError(`File exceeds ${MAX_FILE_BYTES} bytes: ${relPath}`)
+  }
   return readFile(target, 'utf8')
 }
 
@@ -180,6 +213,7 @@ export async function writeViewFile(
   const target = resolveInView(projectDir, view, relPath)
   // Checked before anything touches the filesystem — never mkdir first.
   await assertRealPathInView(viewRoot, target)
+  assertSupported(relPath)
   await mkdir(resolve(target, '..'), { recursive: true })
   await writeFile(target, content, 'utf8')
 }
