@@ -9,7 +9,7 @@ export function App() {
   const [openId, setOpenId] = useState<string | null>(null)
 
   return openId ? (
-    <Workspace client={client} projectId={openId} onBack={() => setOpenId(null)} />
+    <Workspace client={client} projectId={openId} view="lld" onBack={() => setOpenId(null)} />
   ) : (
     <Library client={client} onOpen={setOpenId} />
   )

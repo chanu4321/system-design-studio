@@ -1,10 +1,10 @@
 import MonacoEditor from '@monaco-editor/react'
 import { useCallback, useEffect, useState } from 'react'
-import type { FileEntry } from '@sd/shared'
+import type { FileEntry, ViewKind } from '@sd/shared'
 import { FileTree } from '../components/FileTree.js'
 import type { ApiClient } from '../api/client.js'
 
-type Props = { client: ApiClient; projectId: string; onBack: () => void }
+type Props = { client: ApiClient; projectId: string; view: ViewKind; onBack: () => void }
 
 const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   java: 'java',
@@ -20,12 +20,14 @@ function monacoLanguage(path: string | null): string {
   return LANGUAGE_BY_EXTENSION[ext] ?? 'plaintext'
 }
 
-export function Workspace({ client, projectId, onBack }: Props) {
+export function Workspace({ client, projectId, view, onBack }: Props) {
   const [files, setFiles] = useState<FileEntry[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [content, setContent] = useState('')
   const [savedContent, setSavedContent] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [mtimeMs, setMtimeMs] = useState<number | undefined>(undefined)
+  const [conflict, setConflict] = useState(false)
 
   const dirty = selected !== null && content !== savedContent
 
@@ -40,11 +42,11 @@ export function Workspace({ client, projectId, onBack }: Props) {
 
   const refreshFiles = useCallback(async () => {
     try {
-      setFiles((await client.listFiles(projectId, 'lld')).files)
+      setFiles((await client.listFiles(projectId, view)).files)
     } catch (err) {
       setError((err as Error).message)
     }
-  }, [client, projectId])
+  }, [client, projectId, view])
 
   useEffect(() => {
     void refreshFiles()
@@ -54,28 +56,46 @@ export function Workspace({ client, projectId, onBack }: Props) {
     if (path === selected) return
     if (!confirmDiscard()) return
     try {
-      const file = await client.readFile(projectId, 'lld', path)
+      const file = await client.readFile(projectId, view, path)
       setSelected(path)
       setContent(file.content)
       setSavedContent(file.content)
+      setMtimeMs(file.mtimeMs)
+      setConflict(false)
       setError(null)
     } catch (err) {
       setError((err as Error).message)
     }
   }
 
-  async function save() {
+  async function save(force = false) {
     if (!selected || !dirty) return
     try {
-      await client.writeFile(projectId, 'lld', selected, content)
+      await client.writeFile(projectId, view, selected, content, force ? undefined : mtimeMs)
       setSavedContent(content)
+      setConflict(false)
       setError(null)
+      const refreshed = await client.readFile(projectId, view, selected)
+      setMtimeMs(refreshed.mtimeMs)
       await refreshFiles()
     } catch (err) {
-      // The buffer stays dirty on purpose: a failed save must never look
-      // like a successful one.
+      if ((err as { status?: number }).status === 409) {
+        // The buffer stays dirty on purpose: neither version is discarded until
+        // the user picks one.
+        setConflict(true)
+        return
+      }
       setError(`Save failed: ${(err as Error).message}`)
     }
+  }
+
+  async function reload() {
+    if (!selected) return
+    const file = await client.readFile(projectId, view, selected)
+    setContent(file.content)
+    setSavedContent(file.content)
+    setMtimeMs(file.mtimeMs)
+    setConflict(false)
   }
 
   return (
@@ -97,6 +117,18 @@ export function Workspace({ client, projectId, onBack }: Props) {
       </header>
 
       <FileTree files={files} selected={selected} onSelect={(p) => void open(p)} />
+
+      {conflict && (
+        <div className="conflict" role="alert">
+          <span>This file changed on disk.</span>
+          <button type="button" onClick={() => void reload()}>
+            Reload
+          </button>
+          <button type="button" onClick={() => void save(true)}>
+            Overwrite anyway
+          </button>
+        </div>
+      )}
 
       <section className="editor">
         {selected ? (

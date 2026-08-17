@@ -11,3 +11,4 @@ body { margin: 0; }
 .file-tree ul { list-style: none; margin: 0; padding: 0; }
 .file-tree button { background: none; border: 0; color: inherit; cursor: pointer; text-align: left; width: 100%; padding: .15rem .25rem; }
 .file-tree button[aria-current='true'] { font-weight: 700; }
+.conflict { grid-column: 1 / -1; display: flex; gap: .75rem; align-items: center; padding: .5rem 1rem; border-bottom: 1px solid currentColor; }

@@ -16,7 +16,9 @@ let client: ApiClient
 beforeEach(() => {
   client = {
     listFiles: vi.fn().mockResolvedValue({ files: [{ path: 'src/Vehicle.java', size: 20 }] }),
-    readFile: vi.fn().mockResolvedValue({ path: 'src/Vehicle.java', content: 'class Vehicle {}' }),
+    readFile: vi
+      .fn()
+      .mockResolvedValue({ path: 'src/Vehicle.java', content: 'class Vehicle {}', mtimeMs: 1 }),
     writeFile: vi.fn().mockResolvedValue(undefined),
     listProjects: vi.fn(),
     createProject: vi.fn(),
@@ -25,12 +27,12 @@ beforeEach(() => {
 
 describe('Workspace', () => {
   it('lists the view files on mount', async () => {
-    render(<Workspace client={client} projectId={ID} onBack={vi.fn()} />)
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
     expect(await screen.findByText('src/Vehicle.java')).toBeTruthy()
   })
 
   it('loads file content into the editor when a file is selected', async () => {
-    render(<Workspace client={client} projectId={ID} onBack={vi.fn()} />)
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
     await userEvent.click(await screen.findByText('src/Vehicle.java'))
     await waitFor(() =>
       expect((screen.getByLabelText('editor') as HTMLTextAreaElement).value).toBe('class Vehicle {}'),
@@ -38,7 +40,7 @@ describe('Workspace', () => {
   })
 
   it('marks the buffer dirty on edit and clean after save', async () => {
-    render(<Workspace client={client} projectId={ID} onBack={vi.fn()} />)
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
     await userEvent.click(await screen.findByText('src/Vehicle.java'))
     await screen.findByLabelText('editor')
 
@@ -51,7 +53,7 @@ describe('Workspace', () => {
   })
 
   it('does not call writeFile when nothing changed', async () => {
-    render(<Workspace client={client} projectId={ID} onBack={vi.fn()} />)
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
     await userEvent.click(await screen.findByText('src/Vehicle.java'))
     await screen.findByLabelText('editor')
     expect((screen.getByRole('button', { name: /save/i }) as HTMLButtonElement).disabled).toBe(true)
@@ -61,7 +63,7 @@ describe('Workspace', () => {
 
   it('reports a save failure instead of silently discarding the edit', async () => {
     ;(client.writeFile as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('disk full'))
-    render(<Workspace client={client} projectId={ID} onBack={vi.fn()} />)
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
     await userEvent.click(await screen.findByText('src/Vehicle.java'))
     await screen.findByLabelText('editor')
     await userEvent.type(screen.getByLabelText('editor'), ' ')
@@ -72,7 +74,7 @@ describe('Workspace', () => {
 
   it('returns to the library when back is clicked', async () => {
     const onBack = vi.fn()
-    render(<Workspace client={client} projectId={ID} onBack={onBack} />)
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={onBack} />)
     await userEvent.click(await screen.findByRole('button', { name: /back/i }))
     expect(onBack).toHaveBeenCalled()
   })
@@ -86,7 +88,7 @@ describe('Workspace', () => {
     })
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
 
-    render(<Workspace client={client} projectId={ID} onBack={vi.fn()} />)
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
     await userEvent.click(await screen.findByText('src/Vehicle.java'))
     await screen.findByLabelText('editor')
     await userEvent.type(screen.getByLabelText('editor'), ' ')
@@ -107,7 +109,7 @@ describe('Workspace', () => {
     })
     const confirm = vi.spyOn(window, 'confirm')
 
-    render(<Workspace client={client} projectId={ID} onBack={vi.fn()} />)
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
     await userEvent.click(await screen.findByText('src/Vehicle.java'))
     await screen.findByLabelText('editor')
     await userEvent.click(screen.getByText('src/Ticket.java'))
@@ -119,7 +121,7 @@ describe('Workspace', () => {
     const onBack = vi.fn()
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
 
-    render(<Workspace client={client} projectId={ID} onBack={onBack} />)
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={onBack} />)
     await userEvent.click(await screen.findByText('src/Vehicle.java'))
     await screen.findByLabelText('editor')
     await userEvent.type(screen.getByLabelText('editor'), ' ')
@@ -128,5 +130,67 @@ describe('Workspace', () => {
 
     expect(confirm).toHaveBeenCalled()
     expect(onBack).not.toHaveBeenCalled()
+  })
+
+  it('shows a conflict banner when the save is refused as stale', async () => {
+    ;(client.writeFile as ReturnType<typeof vi.fn>).mockRejectedValue(
+      Object.assign(new Error('File changed on disk'), { status: 409 }),
+    )
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
+    await userEvent.click(await screen.findByText('src/Vehicle.java'))
+    await screen.findByLabelText('editor')
+    await userEvent.type(screen.getByLabelText('editor'), ' ')
+    await userEvent.click(screen.getByRole('button', { name: /save/i }))
+
+    expect(await screen.findByText(/changed on disk/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /reload/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /overwrite anyway/i })).toBeTruthy()
+    // The buffer must stay dirty until the user chooses.
+    expect(screen.getByText(/unsaved/i)).toBeTruthy()
+  })
+
+  it('reload discards the buffer and takes the version from disk', async () => {
+    ;(client.writeFile as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      Object.assign(new Error('File changed on disk'), { status: 409 }),
+    )
+    ;(client.readFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      path: 'src/Vehicle.java',
+      content: 'from disk',
+      mtimeMs: 999,
+    })
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
+    await userEvent.click(await screen.findByText('src/Vehicle.java'))
+    await screen.findByLabelText('editor')
+    await userEvent.type(screen.getByLabelText('editor'), ' ')
+    await userEvent.click(screen.getByRole('button', { name: /save/i }))
+    await screen.findByText(/changed on disk/i)
+
+    await userEvent.click(screen.getByRole('button', { name: /reload/i }))
+
+    await waitFor(() =>
+      expect((screen.getByLabelText('editor') as HTMLTextAreaElement).value).toBe('from disk'),
+    )
+    expect(screen.queryByText(/unsaved/i)).toBeNull()
+  })
+
+  it('overwrite anyway retries the save without a precondition', async () => {
+    const writeFile = client.writeFile as ReturnType<typeof vi.fn>
+    writeFile.mockRejectedValueOnce(
+      Object.assign(new Error('File changed on disk'), { status: 409 }),
+    )
+    writeFile.mockResolvedValueOnce(undefined)
+
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
+    await userEvent.click(await screen.findByText('src/Vehicle.java'))
+    await screen.findByLabelText('editor')
+    await userEvent.type(screen.getByLabelText('editor'), ' ')
+    await userEvent.click(screen.getByRole('button', { name: /save/i }))
+    await screen.findByText(/changed on disk/i)
+
+    await userEvent.click(screen.getByRole('button', { name: /overwrite anyway/i }))
+
+    await waitFor(() => expect(writeFile).toHaveBeenCalledTimes(2))
+    expect(writeFile.mock.calls[1]?.[4]).toBeUndefined() // no precondition on the retry
+    await waitFor(() => expect(screen.queryByText(/unsaved/i)).toBeNull())
   })
 })
