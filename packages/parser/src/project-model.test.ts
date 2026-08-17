@@ -69,4 +69,45 @@ describe('createProjectModel', () => {
     const built = project.setFiles(files)
     expect(project.current()).toEqual(built)
   })
+
+  it('re-extracts exactly the one edited file, and does not parse a non-Java path at all', () => {
+    let calls = 0
+    const spied: JavaParser = { parse: (source) => { calls++; return parser.parse(source) } }
+
+    const project = createProjectModel(spied)
+    project.setFiles(files)
+    calls = 0 // only updateFile's extraction count matters below
+
+    project.updateFile('src/Car.java', 'class Car {}')
+    // Not 2 (which a "re-parse every cached file" implementation would also
+    // produce here, since there are only two files) — the assertion that
+    // actually distinguishes single-file re-extraction is the exact count 1.
+    expect(calls).toBe(1)
+
+    calls = 0
+    project.updateFile('README.md', '# not java, must not be parsed at all')
+    expect(calls).toBe(0)
+  })
+
+  it('keeps the previous member list rather than a fresh, differently-partial extraction when a file stops parsing', () => {
+    // A fresh parse of `good` yields fields [speed, name] and methods [go].
+    // A fresh parse of `broken` on its own — confirmed by direct probe, see
+    // the task 10 fix report — drops the method entirely under tree-sitter's
+    // error recovery (fields [speed, name], methods []), while `class
+    // Vehicle` itself still recovers enough to be recognised. So this
+    // fixture discriminates "the stale entry kept the previous shape" from
+    // "the stale entry is a fresh partial re-extraction of the broken text":
+    // only the former still has `go`.
+    const good = 'class Vehicle {\n  private int speed;\n  private String name;\n  void go() {}\n}'
+    const broken = 'class Vehicle {\n  private int speed;\n  private String name;\n  void go(\n}'
+
+    const project = createProjectModel(parser)
+    project.setFiles([{ path: 'src/Vehicle.java', content: good }])
+    const after = project.updateFile('src/Vehicle.java', broken)
+
+    const vehicle = after.nodes.find((n) => n.name === 'Vehicle')
+    expect(vehicle?.stale).toBe(true)
+    expect(vehicle?.members?.fields.map((f) => f.name)).toEqual(['speed', 'name'])
+    expect(vehicle?.members?.methods.map((m) => m.name)).toEqual(['go'])
+  })
 })
