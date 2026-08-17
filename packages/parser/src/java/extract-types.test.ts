@@ -68,4 +68,37 @@ describe('extractTypes', () => {
     const { nodes } = extract('class A {}\nclass B { void go( }')
     expect(nodes.map((n) => n.name)).toContain('A')
   })
+
+  it('does not let an annotation argument look like a static modifier', () => {
+    const { nodes } = extract('class A {\n  @SuppressWarnings("static-access") private int x;\n}')
+    expect(nodes[0]?.members?.fields[0]).toEqual({ name: 'x', type: 'int', visibility: 'private', static: false })
+  })
+
+  it('does not let an annotation argument containing "public" affect visibility', () => {
+    const { nodes } = extract('class A {\n  @GuardedBy("publicLock") int x;\n}')
+    expect(nodes[0]?.members?.fields[0]?.visibility).toBe('package')
+  })
+
+  it('defaults an interface method with no modifiers to public', () => {
+    const { nodes } = extract('interface Movable {\n  void move();\n}')
+    expect(nodes[0]?.members?.methods[0]?.visibility).toBe('public')
+  })
+
+  it('defaults an interface field with no modifiers to public and static', () => {
+    const { nodes } = extract('interface Movable {\n  int MAX = 10;\n}')
+    expect(nodes[0]?.members?.fields[0]).toEqual({ name: 'MAX', type: 'int', visibility: 'public', static: true })
+  })
+
+  it('still defaults a class method with no modifiers to package visibility', () => {
+    const { nodes } = extract('class A {\n  void go() {}\n}')
+    expect(nodes[0]?.members?.methods[0]?.visibility).toBe('package')
+  })
+
+  it('surfaces enum fields and methods declared after the constant list', () => {
+    const { nodes } = extract(
+      'enum Colour {\n  RED, GREEN;\n  private final String hex;\n  Colour() {}\n  String hex() { return hex; }\n}',
+    )
+    expect(nodes[0]?.members?.fields).toEqual([{ name: 'hex', type: 'String', visibility: 'private', static: false }])
+    expect(nodes[0]?.members?.methods.map((m) => m.name)).toEqual(['hex'])
+  })
 })

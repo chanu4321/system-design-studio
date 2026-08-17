@@ -16,6 +16,7 @@ type SyntaxNode = {
   text: string
   startPosition: { row: number }
   endPosition: { row: number }
+  children: SyntaxNode[]
   namedChildren: SyntaxNode[]
   childForFieldName(name: string): SyntaxNode | null
 }
@@ -31,41 +32,93 @@ const DECLARATION_KIND: Record<string, NodeKind> = {
   record_declaration: 'class',
 }
 
-function modifiersOf(node: SyntaxNode): string {
-  // `modifiers` is a plain (unnamed-field) named child, not exposed as a
-  // field — confirmed by reading the S-expression, hence the type search
-  // here rather than childForFieldName('modifiers').
-  return node.namedChildren.find((c) => c.type === 'modifiers')?.text ?? ''
+const KEYWORD_MODIFIERS = new Set(['public', 'protected', 'private', 'static', 'abstract'])
+
+/**
+ * The modifiers node's own `.text` is NOT a safe substring-match target: it
+ * includes annotation subtrees verbatim, and an annotation's string-literal
+ * argument can contain any of the keywords below.
+ * `@SuppressWarnings("static-access") private int x;` produces a modifiers
+ * node whose `.text` is `@SuppressWarnings("static-access") private` —
+ * matching "static" against that text falsely marks a non-static field as
+ * static. Confirmed by parsing that fixture and printing every child
+ * (named and anonymous) of the modifiers node.
+ *
+ * The actual keyword tokens (`public`, `static`, `abstract`, ...) are
+ * anonymous children of `modifiers` — their own node `type` IS the literal
+ * keyword — sitting alongside `annotation`/`marker_annotation` subtrees
+ * that carry no such type. Reading `children` (not `namedChildren`, which
+ * excludes anonymous tokens) and testing exact `type` membership against a
+ * known keyword set is immune to whatever text an annotation carries,
+ * because an annotation node's type is never one of these literal strings.
+ */
+function modifierKeywords(node: SyntaxNode): Set<string> {
+  const modifiers = node.namedChildren.find((c) => c.type === 'modifiers')
+  if (!modifiers) return new Set()
+  return new Set(modifiers.children.map((c) => c.type).filter((t) => KEYWORD_MODIFIERS.has(t)))
 }
 
-function visibilityOf(node: SyntaxNode): Visibility {
-  const text = modifiersOf(node)
-  if (text.includes('public')) return 'public'
-  if (text.includes('protected')) return 'protected'
-  if (text.includes('private')) return 'private'
-  return 'package'
+/**
+ * Java's implicit-visibility rule: a member of an interface with no
+ * explicit visibility keyword is public (this is the common case — writing
+ * `public` on an interface method is redundant and rare in real code).
+ * `implicitPublic` should be true only when the declaring type is an
+ * interface; everywhere else, no modifier means package-private.
+ */
+function visibilityOf(node: SyntaxNode, implicitPublic = false): Visibility {
+  const keywords = modifierKeywords(node)
+  if (keywords.has('public')) return 'public'
+  if (keywords.has('protected')) return 'protected'
+  if (keywords.has('private')) return 'private'
+  return implicitPublic ? 'public' : 'package'
 }
 
-function isStatic(node: SyntaxNode): boolean {
-  return modifiersOf(node).includes('static')
+/**
+ * `implicitStatic` should be true only for interface fields (all fields
+ * declared in an interface body are implicitly static constants per the
+ * JLS) — never for interface methods, which are not implicitly static.
+ */
+function isStatic(node: SyntaxNode, implicitStatic = false): boolean {
+  return modifierKeywords(node).has('static') || implicitStatic
 }
 
 function isAbstract(node: SyntaxNode): boolean {
-  return modifiersOf(node).includes('abstract')
+  return modifierKeywords(node).has('abstract')
 }
 
 function bodyOf(node: SyntaxNode): SyntaxNode | null {
   return node.childForFieldName('body')
 }
 
-function membersOf(decl: SyntaxNode): { fields: Field[]; methods: Method[] } {
-  const fields: Field[] = []
-  const methods: Method[] = []
-  const body = bodyOf(decl)
-  if (!body) return { fields, methods }
-
-  for (const member of body.namedChildren) {
-    if (member.type === 'field_declaration') {
+/**
+ * Recurses into a body-like node's members, accumulating into `fields`/
+ * `methods`. Called once for a normal class/interface/enum body, and again
+ * (self-recursively) for an `enum_body_declarations` wrapper — see the note
+ * below.
+ */
+function collectMembers(bodyNode: SyntaxNode, isInterface: boolean, fields: Field[], methods: Method[]): void {
+  for (const member of bodyNode.namedChildren) {
+    if (member.type === 'enum_body_declarations') {
+      // Enum members declared after the `;` separator (fields,
+      // constructors, methods) are not direct children of enum_body — they
+      // are wrapped in one enum_body_declarations node. Confirmed by
+      // parsing `enum Colour { RED, GREEN; private final String hex;
+      // Colour() {} String hex() { return hex; } }`: without unwrapping
+      // this wrapper, a flat pass over enum_body's namedChildren finds only
+      // the enum_constants and silently drops the field/constructor/method
+      // entirely. `walk`'s generic recursion already finds any nested type
+      // declaration inside this wrapper on its own, so only member
+      // collection needs the unwrap.
+      collectMembers(member, isInterface, fields, methods)
+      continue
+    }
+    // Interface fields do not parse as field_declaration at all — they use
+    // a distinct constant_declaration node type (grammatically, only
+    // interface bodies can contain one), confirmed by parsing
+    // `interface Movable { int MAX = 10; }`. Both shapes carry the same
+    // `type` field and one-or-more `declarator` fields, so they are
+    // extracted identically here.
+    if (member.type === 'field_declaration' || member.type === 'constant_declaration') {
       const type = member.childForFieldName('type')?.text ?? ''
       // A single field_declaration can carry multiple declarators (`int a,
       // b;`) — confirmed each gets its own `declarator:` field, so
@@ -74,7 +127,14 @@ function membersOf(decl: SyntaxNode): { fields: Field[]; methods: Method[] } {
       for (const declarator of member.namedChildren.filter((c) => c.type === 'variable_declarator')) {
         const name = declarator.childForFieldName('name')?.text
         if (!name) continue
-        fields.push({ name, type, visibility: visibilityOf(member), static: isStatic(member) })
+        fields.push({
+          name,
+          type,
+          visibility: visibilityOf(member, isInterface),
+          // All interface fields are implicitly static constants per the
+          // JLS, regardless of whether `static` is written explicitly.
+          static: isStatic(member, isInterface),
+        })
       }
     } else if (member.type === 'method_declaration') {
       const name = member.childForFieldName('name')?.text
@@ -89,11 +149,21 @@ function membersOf(decl: SyntaxNode): { fields: Field[]; methods: Method[] } {
         name,
         returnType: member.childForFieldName('type')?.text ?? 'void',
         params,
-        visibility: visibilityOf(member),
-        static: isStatic(member),
+        visibility: visibilityOf(member, isInterface),
+        // Unlike fields, interface methods are never implicitly static.
+        static: isStatic(member, false),
       })
     }
   }
+}
+
+function membersOf(decl: SyntaxNode): { fields: Field[]; methods: Method[] } {
+  const fields: Field[] = []
+  const methods: Method[] = []
+  const body = bodyOf(decl)
+  if (!body) return { fields, methods }
+
+  collectMembers(body, decl.type === 'interface_declaration', fields, methods)
   return { fields, methods }
 }
 
