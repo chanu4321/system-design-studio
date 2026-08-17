@@ -6,7 +6,14 @@ import {
 } from '@sd/shared'
 import type { FastifyInstance } from 'fastify'
 import type { ServerConfig } from '../config.js'
-import { PathEscapeError, listViewFiles, readViewFile, writeViewFile } from '../projects/files.js'
+import {
+  PathEscapeError,
+  StaleWriteError,
+  UnsupportedFileError,
+  listViewFiles,
+  readViewFileWithMeta,
+  writeViewFile,
+} from '../projects/files.js'
 import { findProject } from './projects.js'
 
 export function registerFileRoutes(app: FastifyInstance, deps: { config: ServerConfig }): void {
@@ -51,10 +58,15 @@ export function registerFileRoutes(app: FastifyInstance, deps: { config: ServerC
       }
 
       try {
-        return { path, content: await readViewFile(target.dir, target.view, path) }
+        const { content, mtimeMs } = await readViewFileWithMeta(target.dir, target.view, path)
+        return { path, content, mtimeMs }
       } catch (err) {
         if (err instanceof PathEscapeError) {
           reply.code(400).send({ error: err.message })
+          return
+        }
+        if (err instanceof UnsupportedFileError) {
+          reply.code(415).send({ error: err.message })
           return
         }
         // Only a genuinely absent file is 404. EACCES, EBUSY (a file held open by
@@ -78,10 +90,18 @@ export function registerFileRoutes(app: FastifyInstance, deps: { config: ServerC
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.message })
 
     try {
-      await writeViewFile(target.dir, target.view, parsed.data.path, parsed.data.content)
+      await writeViewFile(
+        target.dir,
+        target.view,
+        parsed.data.path,
+        parsed.data.content,
+        parsed.data.expectedMtimeMs,
+      )
       return reply.code(204).send()
     } catch (err) {
       if (err instanceof PathEscapeError) return reply.code(400).send({ error: err.message })
+      if (err instanceof UnsupportedFileError) return reply.code(415).send({ error: err.message })
+      if (err instanceof StaleWriteError) return reply.code(409).send({ error: err.message })
       throw err
     }
   })

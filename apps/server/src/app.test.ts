@@ -135,7 +135,11 @@ describe('files', () => {
       method: 'GET',
       url: `/api/projects/${id}/views/lld/file?path=src/Vehicle.java`,
     })
-    expect(read.json()).toEqual({ path: 'src/Vehicle.java', content: 'class Vehicle {}' })
+    expect(read.json()).toEqual({
+      path: 'src/Vehicle.java',
+      content: 'class Vehicle {}',
+      mtimeMs: expect.any(Number),
+    })
   })
 
   it('returns 400 for a path that escapes the view', async () => {
@@ -189,5 +193,43 @@ describe('files', () => {
       url: `/api/projects/${id}/views/lld/file?path=a.java&path=b.java`,
     })
     expect(res.statusCode).toBe(400)
+  })
+
+  it('returns 409 when writing a file that changed on disk', async () => {
+    const id = (await create('Parking Lot')).json().id
+    await app.inject({
+      method: 'PUT',
+      url: `/api/projects/${id}/views/lld/file`,
+      payload: { path: 'src/Vehicle.java', content: 'v1' },
+    })
+    const read = await app.inject({
+      method: 'GET',
+      url: `/api/projects/${id}/views/lld/file?path=src/Vehicle.java`,
+    })
+    const stale = read.json().mtimeMs
+
+    await new Promise((r) => setTimeout(r, 20))
+    await app.inject({
+      method: 'PUT',
+      url: `/api/projects/${id}/views/lld/file`,
+      payload: { path: 'src/Vehicle.java', content: 'from elsewhere' },
+    })
+
+    const res = await app.inject({
+      method: 'PUT',
+      url: `/api/projects/${id}/views/lld/file`,
+      payload: { path: 'src/Vehicle.java', content: 'v2', expectedMtimeMs: stale },
+    })
+    expect(res.statusCode).toBe(409)
+  })
+
+  it('returns 415 for an unsupported file type', async () => {
+    const id = (await create('Parking Lot')).json().id
+    const res = await app.inject({
+      method: 'PUT',
+      url: `/api/projects/${id}/views/lld/file`,
+      payload: { path: 'src/lib.jar', content: 'x' },
+    })
+    expect(res.statusCode).toBe(415)
   })
 })

@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { MAX_FILE_BYTES, PathEscapeError, UnsupportedFileError, listViewFiles, readViewFile, resolveInView, writeViewFile } from './files.js'
+import { MAX_FILE_BYTES, PathEscapeError, StaleWriteError, UnsupportedFileError, listViewFiles, readViewFile, readViewFileWithMeta, resolveInView, writeViewFile } from './files.js'
 
 let dir: string
 beforeEach(() => {
@@ -188,5 +188,45 @@ describe('file type and size guards', () => {
     expect(existsSync(join(dir, 'lld', 'src', 'Exact.java'))).toBe(true)
     const written = await readViewFile(dir, 'lld', 'src/Exact.java')
     expect(written).toBe(exactContent)
+  })
+})
+
+describe('write preconditions', () => {
+  it('returns the file mtime alongside its content', async () => {
+    await writeViewFile(dir, 'lld', 'src/Vehicle.java', 'class Vehicle {}')
+    const got = await readViewFileWithMeta(dir, 'lld', 'src/Vehicle.java')
+    expect(got.content).toBe('class Vehicle {}')
+    expect(got.mtimeMs).toBeGreaterThan(0)
+  })
+
+  it('accepts a write carrying the current mtime', async () => {
+    await writeViewFile(dir, 'lld', 'src/Vehicle.java', 'v1')
+    const { mtimeMs } = await readViewFileWithMeta(dir, 'lld', 'src/Vehicle.java')
+    await writeViewFile(dir, 'lld', 'src/Vehicle.java', 'v2', mtimeMs)
+    expect(await readViewFile(dir, 'lld', 'src/Vehicle.java')).toBe('v2')
+  })
+
+  it('refuses a write whose mtime no longer matches disk', async () => {
+    await writeViewFile(dir, 'lld', 'src/Vehicle.java', 'v1')
+    const { mtimeMs } = await readViewFileWithMeta(dir, 'lld', 'src/Vehicle.java')
+
+    await new Promise((r) => setTimeout(r, 20))
+    writeFileSync(join(dir, 'lld', 'src', 'Vehicle.java'), 'edited elsewhere')
+
+    await expect(
+      writeViewFile(dir, 'lld', 'src/Vehicle.java', 'v2', mtimeMs),
+    ).rejects.toThrow(StaleWriteError)
+    // The external edit must survive.
+    expect(await readViewFile(dir, 'lld', 'src/Vehicle.java')).toBe('edited elsewhere')
+  })
+
+  it('allows a write with no expected mtime, which is how new files are created', async () => {
+    await writeViewFile(dir, 'lld', 'src/New.java', 'class New {}')
+    expect(await readViewFile(dir, 'lld', 'src/New.java')).toBe('class New {}')
+  })
+
+  it('allows a write carrying an expected mtime for a file that does not exist yet', async () => {
+    await writeViewFile(dir, 'lld', 'src/Fresh.java', 'class Fresh {}', 0)
+    expect(await readViewFile(dir, 'lld', 'src/Fresh.java')).toBe('class Fresh {}')
   })
 })
