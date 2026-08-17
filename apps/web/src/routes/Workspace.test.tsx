@@ -193,4 +193,68 @@ describe('Workspace', () => {
     expect(writeFile.mock.calls[1]?.[4]).toBeUndefined() // no precondition on the retry
     await waitFor(() => expect(screen.queryByText(/unsaved/i)).toBeNull())
   })
+
+  it('does not misreport a save as failed when the post-save mtime refresh fails', async () => {
+    const readFile = client.readFile as ReturnType<typeof vi.fn>
+    readFile.mockResolvedValueOnce({ path: 'src/Vehicle.java', content: 'class Vehicle {}', mtimeMs: 1 })
+    readFile.mockRejectedValueOnce(new Error('network down'))
+
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
+    await userEvent.click(await screen.findByText('src/Vehicle.java'))
+    await screen.findByLabelText('editor')
+    await userEvent.type(screen.getByLabelText('editor'), ' ')
+    await userEvent.click(screen.getByRole('button', { name: /save/i }))
+
+    await waitFor(() => expect(client.writeFile).toHaveBeenCalled())
+    // The write succeeded — the buffer must read as clean and nothing must claim it failed.
+    await waitFor(() => expect(screen.queryByText(/unsaved/i)).toBeNull())
+    expect(screen.queryByText(/save failed/i)).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('surfaces an error when reload itself fails, instead of leaving a silent banner', async () => {
+    ;(client.writeFile as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      Object.assign(new Error('File changed on disk'), { status: 409 }),
+    )
+    const readFile = client.readFile as ReturnType<typeof vi.fn>
+    readFile.mockResolvedValueOnce({ path: 'src/Vehicle.java', content: 'class Vehicle {}', mtimeMs: 1 })
+    readFile.mockRejectedValueOnce(new Error('disk unavailable'))
+
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
+    await userEvent.click(await screen.findByText('src/Vehicle.java'))
+    await screen.findByLabelText('editor')
+    await userEvent.type(screen.getByLabelText('editor'), ' ')
+    await userEvent.click(screen.getByRole('button', { name: /save/i }))
+    await screen.findByText(/changed on disk/i)
+
+    await userEvent.click(screen.getByRole('button', { name: /reload/i }))
+
+    expect(await screen.findByText(/disk unavailable/i)).toBeTruthy()
+    // Exactly one alert region — a failed reload must not leave the stale
+    // conflict banner rendered alongside the new error.
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+  })
+
+  it('keeps error and conflict mutually exclusive across repeated failed saves', async () => {
+    const writeFile = client.writeFile as ReturnType<typeof vi.fn>
+    writeFile.mockRejectedValueOnce(new Error('disk full'))
+    writeFile.mockRejectedValueOnce(
+      Object.assign(new Error('File changed on disk'), { status: 409 }),
+    )
+
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
+    await userEvent.click(await screen.findByText('src/Vehicle.java'))
+    await screen.findByLabelText('editor')
+    await userEvent.type(screen.getByLabelText('editor'), ' ')
+
+    await userEvent.click(screen.getByRole('button', { name: /save/i }))
+    await screen.findByRole('alert') // the non-409 error
+
+    await userEvent.click(screen.getByRole('button', { name: /save/i }))
+    await screen.findByText(/changed on disk/i)
+
+    // getByRole throws if more than one match — this proves the old error
+    // alert was cleared when the conflict banner took over.
+    expect(screen.getByRole('alert')).toBeTruthy()
+  })
 })

@@ -75,27 +75,47 @@ export function Workspace({ client, projectId, view, onBack }: Props) {
       setSavedContent(content)
       setConflict(false)
       setError(null)
-      const refreshed = await client.readFile(projectId, view, selected)
-      setMtimeMs(refreshed.mtimeMs)
+      try {
+        // A failure here must never overwrite the fact that the write above
+        // already succeeded. Left stale, mtimeMs at worst causes one spurious
+        // conflict banner on the next save — which Reload resolves correctly,
+        // since disk already holds what was just written.
+        const refreshed = await client.readFile(projectId, view, selected)
+        setMtimeMs(refreshed.mtimeMs)
+      } catch {
+        // Intentionally silent — see comment above.
+      }
       await refreshFiles()
     } catch (err) {
       if ((err as { status?: number }).status === 409) {
         // The buffer stays dirty on purpose: neither version is discarded until
-        // the user picks one.
+        // the user picks one. error and conflict are alternatives, never both.
         setConflict(true)
+        setError(null)
         return
       }
       setError(`Save failed: ${(err as Error).message}`)
+      setConflict(false)
     }
   }
 
   async function reload() {
     if (!selected) return
-    const file = await client.readFile(projectId, view, selected)
-    setContent(file.content)
-    setSavedContent(file.content)
-    setMtimeMs(file.mtimeMs)
-    setConflict(false)
+    try {
+      const file = await client.readFile(projectId, view, selected)
+      setContent(file.content)
+      setSavedContent(file.content)
+      setMtimeMs(file.mtimeMs)
+      setConflict(false)
+      setError(null)
+    } catch (err) {
+      // A failed reload resolves nothing — surface it rather than leaving the
+      // user staring at a silent banner. conflict is cleared so the stale
+      // banner doesn't render alongside this new alert; the next Save attempt
+      // will re-raise the conflict on its own if it's still there.
+      setError((err as Error).message)
+      setConflict(false)
+    }
   }
 
   return (
