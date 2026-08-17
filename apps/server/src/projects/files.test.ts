@@ -175,4 +175,18 @@ describe('file type and size guards', () => {
     }
     expect((await listViewFiles(dir, 'lld'))).toHaveLength(7)
   })
+
+  it('refuses to write content exceeding the size ceiling', async () => {
+    const oversizedContent = 'x'.repeat(MAX_FILE_BYTES + 1)
+    await expect(writeViewFile(dir, 'lld', 'src/Oversized.java', oversizedContent)).rejects.toThrow(UnsupportedFileError)
+    expect(existsSync(join(dir, 'lld', 'src', 'Oversized.java'))).toBe(false)
+  })
+
+  it('accepts writes of exactly MAX_FILE_BYTES', async () => {
+    const exactContent = 'x'.repeat(MAX_FILE_BYTES)
+    await writeViewFile(dir, 'lld', 'src/Exact.java', exactContent)
+    expect(existsSync(join(dir, 'lld', 'src', 'Exact.java'))).toBe(true)
+    const written = await readViewFile(dir, 'lld', 'src/Exact.java')
+    expect(written).toBe(exactContent)
+  })
 })

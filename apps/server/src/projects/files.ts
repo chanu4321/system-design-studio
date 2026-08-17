@@ -214,6 +214,10 @@ export async function writeViewFile(
   // Checked before anything touches the filesystem — never mkdir first.
   await assertRealPathInView(viewRoot, target)
   assertSupported(relPath)
+  const byteLength = Buffer.byteLength(content, 'utf8')
+  if (byteLength > MAX_FILE_BYTES) {
+    throw new UnsupportedFileError(`File exceeds ${MAX_FILE_BYTES} bytes: ${relPath}`)
+  }
   await mkdir(resolve(target, '..'), { recursive: true })
   await writeFile(target, content, 'utf8')
 }
