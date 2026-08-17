@@ -30,6 +30,18 @@ describe('unwrapTypeNames', () => {
   it('strips a qualified prefix to the simple name', () => {
     expect(unwrapTypeNames('java.util.List<Ticket>')).toEqual(['List', 'Ticket'])
   })
+  it('drops an unbounded wildcard, keeping only the container', () => {
+    expect(unwrapTypeNames('List<?>')).toEqual(['List'])
+  })
+  it('unwraps a bounded wildcard extends, keeping the bound', () => {
+    expect(unwrapTypeNames('List<? extends Vehicle>')).toEqual(['List', 'Vehicle'])
+  })
+  it('unwraps a bounded wildcard super, keeping the bound', () => {
+    expect(unwrapTypeNames('List<? super Vehicle>')).toEqual(['List', 'Vehicle'])
+  })
+  it('does not let a type-use annotation look like a type name', () => {
+    expect(unwrapTypeNames('@NonNull String')).toEqual(['String'])
+  })
 })
 
 describe('extractRefs', () => {
@@ -89,6 +101,16 @@ describe('extractRefs', () => {
   it('attributes a nested type its own references', () => {
     const out = refs('class Outer {\n  static class Inner extends Base {}\n}')
     expect(out).toContainEqual({ fromId: 'src/A.java#Outer.Inner', toName: 'Base', kind: 'extends' })
+  })
+
+  // A nested type that starts and ends on the exact same line as its parent
+  // gives both declarations an identical line/endLine range, so span alone
+  // cannot separate them. The multi-line fixture above already passes
+  // without this case and would not catch a regression here.
+  it('attributes a same-line nested type its own references, not the outer one', () => {
+    const out = refs('class Outer { static class Inner extends Base {} }')
+    expect(out).toContainEqual({ fromId: 'src/A.java#Outer.Inner', toName: 'Base', kind: 'extends' })
+    expect(out).not.toContainEqual({ fromId: 'src/A.java#Outer', toName: 'Base', kind: 'extends' })
   })
 
   it('emits nothing for a file with no types', () => {
