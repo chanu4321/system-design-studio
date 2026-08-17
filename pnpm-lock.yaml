@@ -76,6 +76,8 @@ importers:
         specifier: ^6
         version: 6.4.3(tsx@4.23.12)
 
+  packages/model: {}
+
   packages/shared:
     dependencies:
       zod:
