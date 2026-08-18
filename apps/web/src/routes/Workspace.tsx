@@ -1,6 +1,7 @@
 import MonacoEditor from '@monaco-editor/react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FileEntry, ViewKind } from '@sd/shared'
+import type { ModelNode } from '@sd/model'
 import { FileTree } from '../components/FileTree.js'
 import { Graph } from '../graph/Graph.js'
 import { useProjectModel } from '../graph/useProjectModel.js'
@@ -161,14 +162,50 @@ export function Workspace({ client, projectId, view, onBack }: Props) {
     if (node?.file && node.file !== selected) void open(node.file)
   }
 
+  /**
+   * Same shape as packages/parser/src/java/extract-refs.ts's ownerOf: the
+   * smallest span (endLine - line) wins, because a nested declaration's
+   * range sits strictly inside its enclosing one's. Sorting by `line`
+   * descending and taking the first match — the earlier version of this
+   * function — gets the same case that function's own regression test
+   * covers wrong: a nested type that opens *and* closes on its parent's
+   * exact line (`class Outer { static class Inner extends Base {} }` all
+   * on one line) gives both declarations an identical (line, endLine), the
+   * comparator returns 0, and a stable sort leaves the parent first. Ties
+   * on span are only possible when the ranges are identical, and `walk`
+   * (packages/parser/src/java/extract-types.ts) always pushes a
+   * declaration before recursing into its body, so among identical-range
+   * candidates the later one in `model.nodes` is always the more deeply
+   * nested one — hence the tie-break toward the later `line` seen.
+   */
   function onCursorLine(lineNumber: number) {
-    const containing = model.nodes
-      .filter((n) => n.file === selected && n.line !== undefined && n.endLine !== undefined)
-      .filter((n) => lineNumber >= (n.line ?? 0) && lineNumber <= (n.endLine ?? 0))
-      // Innermost wins, so the cursor inside a nested type selects the nested type.
-      .sort((a, b) => (b.line ?? 0) - (a.line ?? 0))[0]
-    if (containing) setSelectedNodeId(containing.id)
+    let best: ModelNode | null = null
+    let bestSpan = Infinity
+    for (const n of model.nodes) {
+      if (n.file !== selected || n.line === undefined || n.endLine === undefined) continue
+      if (lineNumber < n.line || lineNumber > n.endLine) continue
+      const span = n.endLine - n.line
+      const better = !best || span < bestSpan || (span === bestSpan && n.line >= (best.line ?? 0))
+      if (better) {
+        best = n
+        bestSpan = span
+      }
+    }
+    if (best) setSelectedNodeId(best.id)
   }
+
+  // onMount (below) fires exactly once: Monaco does not unmount across a
+  // file switch — one editor instance, one underlying model, reused — so
+  // the subscription registered inside it closes over whichever
+  // `onCursorLine` existed at that very first render, forever. A fresh
+  // `onCursorLine` capturing the current `model`/`selected` is created
+  // every render, but the frozen subscription never sees it: after
+  // switching files, every cursor move keeps filtering against the file
+  // that was open at mount time, silently matching nothing in any file
+  // opened since. Routing the call through a ref that every render keeps
+  // current sidesteps the freeze without needing to re-subscribe.
+  const onCursorLineRef = useRef(onCursorLine)
+  onCursorLineRef.current = onCursorLine
 
   return (
     <div className="workspace">
@@ -217,7 +254,7 @@ export function Workspace({ client, projectId, view, onBack }: Props) {
                     cb: (e: { position: { lineNumber: number } }) => void,
                   ) => void
                 }
-              ).onDidChangeCursorPosition((e) => onCursorLine(e.position.lineNumber))
+              ).onDidChangeCursorPosition((e) => onCursorLineRef.current(e.position.lineNumber))
             }}
             options={{ minimap: { enabled: false }, fontSize: 14 }}
           />

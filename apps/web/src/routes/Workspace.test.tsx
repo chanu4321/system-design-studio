@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '../api/client.js'
@@ -35,6 +35,15 @@ vi.mock('../graph/Graph.js', () => ({
   ),
 }))
 
+// Exposes the cursor-position callback Workspace registers inside onMount so
+// tests can simulate a cursor move at a moment of their choosing — including
+// *after* switching files, which is the scenario onMount's once-only firing
+// can't otherwise reach. vi.hoisted so both the mock factory (hoisted above
+// this file's imports) and the tests below can reference the same object.
+const { moveCursor } = vi.hoisted(() => ({
+  moveCursor: { current: null as ((lineNumber: number) => void) | null },
+}))
+
 vi.mock('@monaco-editor/react', async () => {
   const { useEffect } = await import('react')
   return {
@@ -49,10 +58,20 @@ vi.mock('@monaco-editor/react', async () => {
     }) => {
       useEffect(() => {
         onMount?.({
-          onDidChangeCursorPosition: (cb: (e: { position: { lineNumber: number } }) => void) =>
-            cb({ position: { lineNumber: 1 } }),
+          onDidChangeCursorPosition: (cb: (e: { position: { lineNumber: number } }) => void) => {
+            moveCursor.current = (lineNumber: number) => cb({ position: { lineNumber } })
+            moveCursor.current(1)
+          },
         })
-        // Mount-only, matching the real editor's lifecycle.
+        // Mount-only, matching the real editor's lifecycle: onMount fires
+        // exactly once even across a later file switch (Monaco reuses one
+        // editor/model instance rather than remounting), so the callback
+        // above is captured here once, for good. Tests simulate a *later*
+        // cursor move — e.g. after switching files — by calling
+        // moveCursor.current(line) directly, which exercises exactly the
+        // same "does this go through a frozen or a fresh closure" question
+        // the real subscription raises, without depending on jsdom's
+        // textarea selection-event semantics.
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [])
       return <textarea aria-label="editor" value={value} onChange={(e) => onChange(e.target.value)} />
@@ -379,5 +398,78 @@ describe('Workspace', () => {
     await screen.findByLabelText('editor')
 
     await waitFor(() => expect(screen.getByTestId('selected').textContent).toContain('Vehicle'))
+  })
+
+  it('keeps cursor-to-node selection working after switching files', async () => {
+    ;(client.listFiles as ReturnType<typeof vi.fn>).mockResolvedValue({
+      files: [
+        { path: 'src/Vehicle.java', size: 20 },
+        { path: 'src/Ticket.java', size: 10 },
+      ],
+    })
+    ;(client.readViewContents as ReturnType<typeof vi.fn>).mockResolvedValue({
+      files: [
+        { path: 'src/Vehicle.java', content: 'class Vehicle {}', mtimeMs: 1 },
+        { path: 'src/Ticket.java', content: 'class Ticket {}', mtimeMs: 1 },
+      ],
+    })
+    ;(client.readFile as ReturnType<typeof vi.fn>).mockImplementation(
+      (_id: string, _view: string, path: string) =>
+        Promise.resolve({
+          path,
+          content: path === 'src/Vehicle.java' ? 'class Vehicle {}' : 'class Ticket {}',
+          mtimeMs: 1,
+        }),
+    )
+
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
+    await screen.findByText('node:Vehicle')
+    await userEvent.click(screen.getByText('src/Vehicle.java'))
+    await screen.findByLabelText('editor')
+    await waitFor(() => expect(screen.getByTestId('selected').textContent).toContain('Vehicle'))
+
+    // Monaco does not unmount across a file switch — it's the same editor
+    // instance and underlying model, reused — so onMount, and the
+    // subscription it registers inside it, only ever fire once, at the
+    // very first mount.
+    await userEvent.click(screen.getByText('src/Ticket.java'))
+    await waitFor(() =>
+      expect((screen.getByLabelText('editor') as HTMLTextAreaElement).value).toBe('class Ticket {}'),
+    )
+
+    // Simulate a cursor move within the now-open Ticket.java, through the
+    // very same subscription callback captured at the first mount. If that
+    // callback closes over the model/selected from the first render (the
+    // bug), this filters against 'src/Vehicle.java' forever and never
+    // matches anything in Ticket.java.
+    act(() => moveCursor.current?.(1))
+
+    await waitFor(() => expect(screen.getByTestId('selected').textContent).toContain('Ticket'))
+  })
+
+  it('selects the inner type, not the outer one, when both open on the same line', async () => {
+    const nested = 'class Outer { static class Inner extends Base {} }'
+    ;(client.readViewContents as ReturnType<typeof vi.fn>).mockResolvedValue({
+      files: [{ path: 'src/Vehicle.java', content: nested, mtimeMs: 1 }],
+    })
+    ;(client.readFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      path: 'src/Vehicle.java',
+      content: nested,
+      mtimeMs: 1,
+    })
+
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
+    await screen.findByText('node:Outer')
+    await userEvent.click(screen.getByText('src/Vehicle.java'))
+    await screen.findByLabelText('editor')
+
+    // Outer and Inner both open and close on line 1, so line range alone
+    // can't tell them apart — span must break the tie toward the more
+    // deeply nested declaration, the way packages/parser's ownerOf does.
+    await waitFor(() => {
+      const selected = screen.getByTestId('selected').textContent
+      expect(selected).toContain('Inner')
+      expect(selected).not.toBe('src/Vehicle.java#Outer')
+    })
   })
 })
