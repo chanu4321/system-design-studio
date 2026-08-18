@@ -40,8 +40,11 @@ vi.mock('../graph/Graph.js', () => ({
 // *after* switching files, which is the scenario onMount's once-only firing
 // can't otherwise reach. vi.hoisted so both the mock factory (hoisted above
 // this file's imports) and the tests below can reference the same object.
-const { moveCursor } = vi.hoisted(() => ({
+// editorMock exposes the same editor instance's navigation calls
+// (revealLineInCenter/setPosition) so tests can assert on click-to-navigate.
+const { moveCursor, editorMock } = vi.hoisted(() => ({
   moveCursor: { current: null as ((lineNumber: number) => void) | null },
+  editorMock: { revealLineInCenter: vi.fn(), setPosition: vi.fn() },
 }))
 
 vi.mock('@monaco-editor/react', async () => {
@@ -62,6 +65,8 @@ vi.mock('@monaco-editor/react', async () => {
             moveCursor.current = (lineNumber: number) => cb({ position: { lineNumber } })
             moveCursor.current(1)
           },
+          revealLineInCenter: editorMock.revealLineInCenter,
+          setPosition: editorMock.setPosition,
         })
         // Mount-only, matching the real editor's lifecycle: onMount fires
         // exactly once even across a later file switch (Monaco reuses one
@@ -364,9 +369,53 @@ describe('Workspace', () => {
     expect(screen.getByRole('alert')).toBeTruthy()
   })
 
+  // The fourth instance of the "error and conflict are alternatives, never
+  // both" invariant: modelError (a parser-init failure, from useProjectModel)
+  // is a wholly separate piece of state from error/conflict and was never
+  // coordinated with them, so it could render its own role="alert" span
+  // alongside either. Forcing a genuine modelError needs an invalid grammar
+  // path fed to createParser — see the identical technique in
+  // useProjectModel.test.ts's "surfaces a rejected parser initialisation"
+  // test — then stacking a second, ordinary failure (a save error, then a
+  // save conflict) on top of it.
+  it('renders at most one alert region when the model fails to init alongside a save failure or a conflict', async () => {
+    vi.resetModules()
+    vi.doMock('../graph/wasm.js', async () => ({
+      wasmPaths: {
+        runtime: (await import('@sd/parser/default-wasm-paths.js')).defaultWasmPaths().runtime,
+        java: 'this-grammar-file-does-not-exist.wasm',
+      },
+    }))
+    const { Workspace: FreshWorkspace } = await import('./Workspace.js')
+
+    const writeFile = client.writeFile as ReturnType<typeof vi.fn>
+    writeFile.mockRejectedValueOnce(new Error('disk full'))
+    writeFile.mockRejectedValueOnce(Object.assign(new Error('File changed on disk'), { status: 409 }))
+
+    render(<FreshWorkspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
+    await userEvent.click(await screen.findByText('src/Vehicle.java'))
+    await screen.findByLabelText('editor')
+    await screen.findByText(/graph unavailable/i)
+
+    await userEvent.type(screen.getByLabelText('editor'), ' ')
+    await userEvent.click(screen.getByRole('button', { name: /save/i }))
+    await screen.findByText(/disk full/i)
+    // getAllByRole would find 2 if the still-mounted modelError span rendered
+    // alongside this save error.
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+
+    await userEvent.click(screen.getByRole('button', { name: /save/i }))
+    await screen.findByText(/changed on disk/i)
+    // Same invariant against the other alert region modelError can collide
+    // with: the conflict banner.
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+  })
+
   it('loads the whole view once and renders its types', async () => {
     render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
     await waitFor(() => expect(client.readViewContents).toHaveBeenCalledWith(ID, 'lld'))
+    // "once" means once — a call-count assertion, not just a matching-args one.
+    expect(client.readViewContents).toHaveBeenCalledTimes(1)
     expect(await screen.findByText('node:Vehicle')).toBeTruthy()
   })
 
@@ -389,6 +438,71 @@ describe('Workspace', () => {
     render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
     await userEvent.click(await screen.findByText('node:Vehicle'))
     await waitFor(() => expect(client.readFile).toHaveBeenCalledWith(ID, 'lld', 'src/Vehicle.java'))
+  })
+
+  // Spec §10: "Clicking a node opens its file at its line." `class Vehicle {}`
+  // puts the class keyword on line 1 (extractTypes uses startPosition.row + 1),
+  // so the node's line is 1.
+  it('reveals the clicked node in the editor at its line, opening the file first', async () => {
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
+    await userEvent.click(await screen.findByText('node:Vehicle'))
+
+    await waitFor(() => expect(editorMock.revealLineInCenter).toHaveBeenCalledWith(1))
+    expect(editorMock.setPosition).toHaveBeenCalledWith({ lineNumber: 1, column: 1 })
+  })
+
+  it('reveals the clicked node at its line even when its file is already open', async () => {
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
+    await userEvent.click(await screen.findByText('src/Vehicle.java'))
+    await screen.findByLabelText('editor')
+    const readFileCallsBeforeClick = (client.readFile as ReturnType<typeof vi.fn>).mock.calls.length
+
+    // The node's file equals `selected` already, so open() short-circuits
+    // without re-reading — navigation must still happen from that branch.
+    await userEvent.click(screen.getByText('node:Vehicle'))
+
+    await waitFor(() => expect(editorMock.revealLineInCenter).toHaveBeenCalledWith(1))
+    expect(editorMock.setPosition).toHaveBeenCalledWith({ lineNumber: 1, column: 1 })
+    expect((client.readFile as ReturnType<typeof vi.fn>).mock.calls.length).toBe(readFileCallsBeforeClick)
+  })
+
+  it('does not navigate the editor when the discard-unsaved-changes prompt is declined', async () => {
+    ;(client.listFiles as ReturnType<typeof vi.fn>).mockResolvedValue({
+      files: [
+        { path: 'src/Vehicle.java', size: 20 },
+        { path: 'src/Ticket.java', size: 10 },
+      ],
+    })
+    ;(client.readViewContents as ReturnType<typeof vi.fn>).mockResolvedValue({
+      files: [
+        { path: 'src/Vehicle.java', content: 'class Vehicle {}', mtimeMs: 1 },
+        { path: 'src/Ticket.java', content: 'class Ticket {}', mtimeMs: 1 },
+      ],
+    })
+    ;(client.readFile as ReturnType<typeof vi.fn>).mockImplementation(
+      (_id: string, _view: string, path: string) =>
+        Promise.resolve({
+          path,
+          content: path === 'src/Vehicle.java' ? 'class Vehicle {}' : 'class Ticket {}',
+          mtimeMs: 1,
+        }),
+    )
+
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
+    await screen.findByText('node:Vehicle')
+    await userEvent.click(screen.getByText('src/Ticket.java'))
+    await screen.findByLabelText('editor')
+    await userEvent.type(screen.getByLabelText('editor'), ' ')
+
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    // node:Vehicle's file (src/Vehicle.java) differs from the dirty, currently
+    // open src/Ticket.java, so open() asks to discard and the user declines.
+    await userEvent.click(screen.getByText('node:Vehicle'))
+
+    // Give any (wrongful) navigation a chance to happen before asserting its absence.
+    await waitFor(() => expect((screen.getByLabelText('editor') as HTMLTextAreaElement).value).toBe('class Ticket {} '))
+    expect(editorMock.revealLineInCenter).not.toHaveBeenCalled()
+    expect(editorMock.setPosition).not.toHaveBeenCalled()
   })
 
   it('selects the node whose range contains the cursor', async () => {

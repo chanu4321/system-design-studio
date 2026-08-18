@@ -23,6 +23,15 @@ function monacoLanguage(path: string | null): string {
   return LANGUAGE_BY_EXTENSION[ext] ?? 'plaintext'
 }
 
+// The slice of Monaco's editor API this component drives directly, kept as a
+// local structural type (rather than importing monaco-editor's own types) to
+// match the cast already used for the cursor-position subscription below.
+type EditorHandle = {
+  onDidChangeCursorPosition: (cb: (e: { position: { lineNumber: number } }) => void) => void
+  revealLineInCenter: (lineNumber: number) => void
+  setPosition: (position: { lineNumber: number; column: number }) => void
+}
+
 export function Workspace({ client, projectId, view, onBack }: Props) {
   const [files, setFiles] = useState<FileEntry[]>([])
   const [selected, setSelected] = useState<string | null>(null)
@@ -77,9 +86,16 @@ export function Workspace({ client, projectId, view, onBack }: Props) {
     void refreshFiles()
   }, [refreshFiles])
 
-  async function open(path: string) {
-    if (path === selected) return
-    if (!confirmDiscard()) return
+  /**
+   * Returns whether `path` is the open/selected file once this call settles —
+   * true for the already-open short-circuit and a successful read, false when
+   * the user declines the discard prompt or the read fails. onSelectNode
+   * relies on this to decide whether it's safe to navigate the editor: never
+   * scroll to a line in a file the user chose not to leave.
+   */
+  async function open(path: string): Promise<boolean> {
+    if (path === selected) return true
+    if (!confirmDiscard()) return false
     try {
       const file = await client.readFile(projectId, view, path)
       setSelected(path)
@@ -88,6 +104,7 @@ export function Workspace({ client, projectId, view, onBack }: Props) {
       setMtimeMs(file.mtimeMs)
       setConflict(false)
       setError(null)
+      return true
     } catch (err) {
       // error and conflict are alternatives, never both — see the identical
       // ruling in save()'s catch below. Reachable when a save 409s (banner
@@ -96,6 +113,7 @@ export function Workspace({ client, projectId, view, onBack }: Props) {
       // the stale banner would stay mounted alongside this new alert.
       setError((err as Error).message)
       setConflict(false)
+      return false
     }
   }
 
@@ -156,10 +174,24 @@ export function Workspace({ client, projectId, view, onBack }: Props) {
     if (selected) update(selected, next)
   }
 
+  /**
+   * Spec §10: "Clicking a node opens its file at its line." open() is async
+   * and may be declined via the dirty-buffer discard prompt — only reveal the
+   * line once open() confirms the target file is actually the one on screen
+   * (which it also reports for the already-open short-circuit, so navigation
+   * still happens when the node is in the file currently open — the common
+   * case for a multi-type file).
+   */
   function onSelectNode(id: string) {
     setSelectedNodeId(id)
     const node = model.nodes.find((n) => n.id === id)
-    if (node?.file && node.file !== selected) void open(node.file)
+    if (!node?.file) return
+    const file = node.file
+    const line = node.line
+    void (async () => {
+      const opened = await open(file)
+      if (opened && line !== undefined) revealLine(line)
+    })()
   }
 
   /**
@@ -207,6 +239,24 @@ export function Workspace({ client, projectId, view, onBack }: Props) {
   const onCursorLineRef = useRef(onCursorLine)
   onCursorLineRef.current = onCursorLine
 
+  // Captured in onMount below. Monaco mounts only once the editor section
+  // first renders (selected !== null) — a node click can be the very first
+  // file ever opened, so this can still be null when revealLine() below is
+  // called. pendingLineRef carries the target line across that gap; onMount
+  // flushes it the moment the editor becomes available.
+  const editorRef = useRef<EditorHandle | null>(null)
+  const pendingLineRef = useRef<number | null>(null)
+
+  function revealLine(line: number) {
+    const editor = editorRef.current
+    if (!editor) {
+      pendingLineRef.current = line
+      return
+    }
+    editor.revealLineInCenter(line)
+    editor.setPosition({ lineNumber: line, column: 1 })
+  }
+
   return (
     <div className="workspace">
       <header>
@@ -223,7 +273,23 @@ export function Workspace({ client, projectId, view, onBack }: Props) {
         </button>
         {dirty && <span>Unsaved changes</span>}
         {error && <span role="alert">{error}</span>}
-        {modelError && <span role="alert">Graph unavailable: {modelError}</span>}
+        {/*
+         * INVARIANT: at most one role="alert" region renders at a time —
+         * several tests rely on a singular getByRole('alert') query, and this
+         * has already been fixed once each in save(), reload(), and open()
+         * (see the "error and conflict are alternatives" comments above).
+         * modelError is a fourth, independent alert source (a parser-init
+         * failure from useProjectModel that is never cleared), so it only
+         * renders when nothing higher-priority is showing. Priority, highest
+         * first: error > conflict > modelError — a failure from something the
+         * user just did (save/open/reload) or an unresolved stale-file
+         * conflict is more actionable right now than the graph being stale.
+         * Adding a fifth alert path? Route it through this same priority
+         * chain instead of rendering unconditionally.
+         */}
+        {!error && !conflict && modelError && (
+          <span role="alert">Graph unavailable: {modelError}</span>
+        )}
       </header>
 
       <FileTree files={files} selected={selected} onSelect={(p) => void open(p)} />
@@ -248,13 +314,15 @@ export function Workspace({ client, projectId, view, onBack }: Props) {
             value={content}
             onChange={onEditorChange}
             onMount={(editor) => {
-              ;(
-                editor as {
-                  onDidChangeCursorPosition: (
-                    cb: (e: { position: { lineNumber: number } }) => void,
-                  ) => void
-                }
-              ).onDidChangeCursorPosition((e) => onCursorLineRef.current(e.position.lineNumber))
+              const handle = editor as EditorHandle
+              editorRef.current = handle
+              handle.onDidChangeCursorPosition((e) => onCursorLineRef.current(e.position.lineNumber))
+              if (pendingLineRef.current !== null) {
+                const line = pendingLineRef.current
+                pendingLineRef.current = null
+                handle.revealLineInCenter(line)
+                handle.setPosition({ lineNumber: line, column: 1 })
+              }
             }}
             options={{ minimap: { enabled: false }, fontSize: 14 }}
           />
