@@ -5,9 +5,18 @@ body { margin: 0; }
 .card { display: flex; flex-direction: column; gap: .5rem; width: 100%; padding: 1rem; text-align: left; cursor: pointer; border: 1px solid currentColor; border-radius: 8px; background: transparent; color: inherit; }
 .card-title { font-weight: 600; }
 .badges em { font-style: normal; font-size: .75rem; border: 1px solid currentColor; border-radius: 4px; padding: 0 .35rem; margin-right: .25rem; }
-.workspace { display: grid; grid-template-columns: 200px 1fr; grid-template-rows: auto 1fr; height: 100vh; }
+.workspace { display: grid; grid-template-columns: 200px 1fr 1fr; grid-template-rows: auto 1fr; height: 100vh; }
 .workspace header { grid-column: 1 / -1; display: flex; align-items: center; gap: 1rem; padding: .5rem 1rem; border-bottom: 1px solid currentColor; }
 .file-tree { border-right: 1px solid currentColor; overflow: auto; padding: .5rem; }
 .file-tree ul { list-style: none; margin: 0; padding: 0; }
 .file-tree button { background: none; border: 0; color: inherit; cursor: pointer; text-align: left; width: 100%; padding: .15rem .25rem; }
 .file-tree button[aria-current='true'] { font-weight: 700; }
+.conflict { grid-column: 1 / -1; display: flex; gap: .75rem; align-items: center; padding: .5rem 1rem; border-bottom: 1px solid currentColor; }
+.type-node { min-width: 160px; border: 1px solid currentColor; border-radius: 6px; background: Canvas; font-size: 12px; }
+.type-node header { display: flex; align-items: baseline; gap: .5rem; padding: .35rem .5rem; border-bottom: 1px solid currentColor; }
+.type-name { font-weight: 600; }
+.type-kind { font-size: 10px; opacity: .7; }
+.type-node.stale { opacity: .55; }
+.type-members { padding: .35rem .5rem; }
+.type-members ul { list-style: none; margin: 0 0 .25rem; padding: 0; font-family: ui-monospace, monospace; font-size: 11px; }
+.graph { border-left: 1px solid currentColor; }

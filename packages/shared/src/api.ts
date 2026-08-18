@@ -10,6 +10,8 @@ export type CreateProjectBody = z.infer<typeof createProjectBodySchema>
 export const writeFileBodySchema = z.object({
   path: z.string().min(1),
   content: z.string(),
+  /** Omit when creating a file. When present it must match disk, or the write is refused. */
+  expectedMtimeMs: z.number().optional(),
 })
 export type WriteFileBody = z.infer<typeof writeFileBodySchema>
 
@@ -30,4 +32,8 @@ export type ProjectListResponse = {
 export type FileEntry = { path: string; size: number }
 
 export type FileListResponse = { files: FileEntry[] }
-export type FileContentResponse = { path: string; content: string }
+export type FileContentResponse = { path: string; content: string; mtimeMs: number }
+
+export type ViewContentsResponse = {
+  files: { path: string; content: string; mtimeMs: number }[]
+}

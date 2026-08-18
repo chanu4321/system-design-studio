@@ -3,14 +3,26 @@ import {
   writeFileBodySchema,
   type FileContentResponse,
   type FileListResponse,
+  type ViewContentsResponse,
 } from '@sd/shared'
 import type { FastifyInstance } from 'fastify'
 import type { ServerConfig } from '../config.js'
-import { PathEscapeError, listViewFiles, readViewFile, writeViewFile } from '../projects/files.js'
+import type { ScanCache } from '../projects/cache.js'
+import {
+  PathEscapeError,
+  StaleWriteError,
+  UnsupportedFileError,
+  listViewFiles,
+  readViewFileWithMeta,
+  writeViewFile,
+} from '../projects/files.js'
 import { findProject } from './projects.js'
 
-export function registerFileRoutes(app: FastifyInstance, deps: { config: ServerConfig }): void {
-  const { config } = deps
+export function registerFileRoutes(
+  app: FastifyInstance,
+  deps: { config: ServerConfig; scans: ScanCache },
+): void {
+  const { config, scans } = deps
 
   const resolveTarget = async (
     params: unknown,
@@ -22,7 +34,7 @@ export function registerFileRoutes(app: FastifyInstance, deps: { config: ServerC
       reply.code(400).send({ error: `Unknown view "${view}"` })
       return null
     }
-    const found = await findProject(config, id)
+    const found = await findProject({ config, scans }, id)
     if (!found) {
       reply.code(404).send({ error: `No project with id ${id}` })
       return null
@@ -51,10 +63,15 @@ export function registerFileRoutes(app: FastifyInstance, deps: { config: ServerC
       }
 
       try {
-        return { path, content: await readViewFile(target.dir, target.view, path) }
+        const { content, mtimeMs } = await readViewFileWithMeta(target.dir, target.view, path)
+        return { path, content, mtimeMs }
       } catch (err) {
         if (err instanceof PathEscapeError) {
           reply.code(400).send({ error: err.message })
+          return
+        }
+        if (err instanceof UnsupportedFileError) {
+          reply.code(415).send({ error: err.message })
           return
         }
         // Only a genuinely absent file is 404. EACCES, EBUSY (a file held open by
@@ -78,11 +95,56 @@ export function registerFileRoutes(app: FastifyInstance, deps: { config: ServerC
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.message })
 
     try {
-      await writeViewFile(target.dir, target.view, parsed.data.path, parsed.data.content)
+      await writeViewFile(
+        target.dir,
+        target.view,
+        parsed.data.path,
+        parsed.data.content,
+        parsed.data.expectedMtimeMs,
+      )
+      // A new file changes this project's newest-modification time and can
+      // change its detected language — both are scan output.
+      scans.invalidate()
       return reply.code(204).send()
     } catch (err) {
       if (err instanceof PathEscapeError) return reply.code(400).send({ error: err.message })
+      if (err instanceof UnsupportedFileError) return reply.code(415).send({ error: err.message })
+      if (err instanceof StaleWriteError) return reply.code(409).send({ error: err.message })
       throw err
     }
   })
+
+  app.get(
+    '/api/projects/:id/views/:view/contents',
+    async (req, reply): Promise<ViewContentsResponse | void> => {
+      const target = await resolveTarget(req.params, reply)
+      if (!target) return
+
+      // listViewFiles has already applied the extension and size guards, so
+      // everything it names is safe to read and small enough to send.
+      const entries = await listViewFiles(target.dir, target.view)
+      // Annotated rather than inferred: an untyped `[]` accumulator is how a
+      // literal quietly widens and the response type stops matching the shared one.
+      const files: ViewContentsResponse['files'] = []
+      for (const entry of entries) {
+        try {
+          const { content, mtimeMs } = await readViewFileWithMeta(target.dir, target.view, entry.path)
+          files.push({ path: entry.path, content, mtimeMs })
+        } catch (err) {
+          // File disappeared or grew past the size limit since the listing:
+          // treat it as no longer part of the view and skip it.
+          const code = (err as NodeJS.ErrnoException).code
+          if (code === 'ENOENT' || code === 'ENOTDIR') {
+            continue
+          }
+          if (err instanceof UnsupportedFileError) {
+            continue
+          }
+          // All other errors are real faults; rethrow to avoid silently missing files.
+          throw err
+        }
+      }
+      return { files }
+    },
+  )
 }

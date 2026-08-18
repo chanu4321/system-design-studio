@@ -4,6 +4,35 @@ import type { FileEntry, ViewKind } from '@sd/shared'
 
 export class PathEscapeError extends Error {}
 
+export class UnsupportedFileError extends Error {}
+
+/** Thrown by `writeViewFile` when an `expectedMtimeMs` no longer matches disk. */
+export class StaleWriteError extends Error {}
+
+/**
+ * A view is bulk-loaded into browser memory, so an unbounded read is a real
+ * cost rather than a theoretical one. One megabyte is far past any hand-written
+ * source file and far below anything that would hurt.
+ */
+export const MAX_FILE_BYTES = 1_048_576
+
+/** Extensions a source view may contain. Anything else is not ours to open. */
+export const TEXT_EXTENSIONS = new Set([
+  '.java', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.h',
+  '.md', '.txt', '.json', '.yaml', '.yml', '.xml', '.properties', '.gradle',
+])
+
+function extensionOf(path: string): string {
+  const dot = path.lastIndexOf('.')
+  return dot === -1 ? '' : path.slice(dot).toLowerCase()
+}
+
+function assertSupported(relPath: string): void {
+  if (!TEXT_EXTENSIONS.has(extensionOf(relPath))) {
+    throw new UnsupportedFileError(`Unsupported file type: ${relPath}`)
+  }
+}
+
 export type { FileEntry }
 
 /**
@@ -128,7 +157,9 @@ async function walk(root: string, current: string, out: FileEntry[]): Promise<vo
       if (IGNORED_DIRS.has(entry.name)) continue
       await walk(root, abs, out)
     } else if (entry.isFile()) {
+      if (!TEXT_EXTENSIONS.has(extensionOf(entry.name))) continue
       const info = await stat(abs)
+      if (info.size > MAX_FILE_BYTES) continue
       // Windows yields backslashes from path.relative; the same string must
       // round-trip back into readViewFile/writeViewFile unchanged from a
       // browser, so every platform emits forward slashes.
@@ -152,15 +183,35 @@ export async function listViewFiles(projectDir: string, view: ViewKind): Promise
   return out
 }
 
+/**
+ * Reads a view file along with the disk mtime at the moment of the read.
+ * Callers that intend to write the file back pass that mtime through as
+ * `writeViewFile`'s `expectedMtimeMs`, so a concurrent external edit — e.g.
+ * from VS Code, open on the same file — is detected rather than clobbered.
+ */
+export async function readViewFileWithMeta(
+  projectDir: string,
+  view: ViewKind,
+  relPath: string,
+): Promise<{ content: string; mtimeMs: number }> {
+  const viewRoot = resolve(projectDir, view)
+  const target = resolveInView(projectDir, view, relPath)
+  await assertRealPathInView(viewRoot, target)
+  assertSupported(relPath)
+
+  const info = await stat(target)
+  if (info.size > MAX_FILE_BYTES) {
+    throw new UnsupportedFileError(`File exceeds ${MAX_FILE_BYTES} bytes: ${relPath}`)
+  }
+  return { content: await readFile(target, 'utf8'), mtimeMs: info.mtimeMs }
+}
+
 export async function readViewFile(
   projectDir: string,
   view: ViewKind,
   relPath: string,
 ): Promise<string> {
-  const viewRoot = resolve(projectDir, view)
-  const target = resolveInView(projectDir, view, relPath)
-  await assertRealPathInView(viewRoot, target)
-  return readFile(target, 'utf8')
+  return (await readViewFileWithMeta(projectDir, view, relPath)).content
 }
 
 /**
@@ -169,17 +220,46 @@ export async function readViewFile(
  * directory is only created after `resolveInView` has validated the path —
  * never before, so a hostile path cannot cause directory creation outside
  * the view even as a side effect of a rejected write.
+ *
+ * `expectedMtimeMs`, when supplied, must match the file's current mtime or
+ * the write is refused with `StaleWriteError` — the file changed on disk
+ * (e.g. edited in VS Code) since the caller last read it, and proceeding
+ * would silently clobber that edit. Omitting it means "I did not read this
+ * file first," which is how new files get created.
  */
 export async function writeViewFile(
   projectDir: string,
   view: ViewKind,
   relPath: string,
   content: string,
+  expectedMtimeMs?: number,
 ): Promise<void> {
   const viewRoot = resolve(projectDir, view)
   const target = resolveInView(projectDir, view, relPath)
   // Checked before anything touches the filesystem — never mkdir first.
   await assertRealPathInView(viewRoot, target)
+  assertSupported(relPath)
+  const byteLength = Buffer.byteLength(content, 'utf8')
+  if (byteLength > MAX_FILE_BYTES) {
+    throw new UnsupportedFileError(`File exceeds ${MAX_FILE_BYTES} bytes: ${relPath}`)
+  }
+
+  // Undefined means "I did not read this file first" — creating a new file.
+  // A supplied value must match disk, unless the file is absent, in which case
+  // there is nothing to clobber.
+  if (expectedMtimeMs !== undefined) {
+    try {
+      const info = await stat(target)
+      if (info.mtimeMs !== expectedMtimeMs) {
+        throw new StaleWriteError(`File changed on disk: ${relPath}`)
+      }
+    } catch (err) {
+      if (err instanceof StaleWriteError) throw err
+      const code = (err as NodeJS.ErrnoException).code
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw err
+    }
+  }
+
   await mkdir(resolve(target, '..'), { recursive: true })
   await writeFile(target, content, 'utf8')
 }

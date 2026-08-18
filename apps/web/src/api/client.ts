@@ -4,6 +4,7 @@ import type {
   FileListResponse,
   ProjectListResponse,
   ProjectSummaryDto,
+  ViewContentsResponse,
   ViewKind,
 } from '@sd/shared'
 
@@ -41,12 +42,31 @@ export class ApiClient {
     )
   }
 
-  async writeFile(id: string, view: ViewKind, path: string, content: string): Promise<void> {
+  readViewContents(id: string, view: ViewKind): Promise<ViewContentsResponse> {
+    return fetch(`${this.base}/api/projects/${id}/views/${view}/contents`).then(
+      json<ViewContentsResponse>,
+    )
+  }
+
+  async writeFile(
+    id: string,
+    view: ViewKind,
+    path: string,
+    content: string,
+    expectedMtimeMs?: number,
+  ): Promise<void> {
     const res = await fetch(`${this.base}/api/projects/${id}/views/${view}/file`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ path, content }),
+      body: JSON.stringify({ path, content, expectedMtimeMs }),
     })
-    if (!res.ok) throw new Error(`Save failed with ${res.status}`)
+    if (!res.ok) {
+      // The status carries meaning the message cannot: 409 is a conflict the
+      // user resolves, everything else is a failure they can only report.
+      const body = (await res.json().catch(() => ({ error: res.statusText }))) as { error?: string }
+      throw Object.assign(new Error(body.error || `Save failed with ${res.status}`), {
+        status: res.status,
+      })
+    }
   }
 }

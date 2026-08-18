@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createSqliteStore, type MetadataStore } from '@sd/store'
 import type { FastifyInstance } from 'fastify'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildApp } from './app.js'
+import * as filesModule from './projects/files.js'
 
 let dir: string
 let app: FastifyInstance
@@ -91,8 +92,9 @@ describe('projects', () => {
 
   it('prunes index rows for a project deleted from disk', async () => {
     const created = await create('Parking Lot')
-    await app.inject({ method: 'GET', url: '/api/projects' })
-
+    // No priming GET here: POST already indexes the project into the store
+    // directly, and a GET first would cache the pre-deletion scan — the cache
+    // has no way to observe a deletion made outside the app, by design.
     rmSync(join(dir, 'projects', created.json().path), { recursive: true, force: true })
 
     const list = await app.inject({ method: 'GET', url: '/api/projects' })
@@ -111,6 +113,13 @@ describe('projects', () => {
 
     await app.inject({ method: 'GET', url: '/api/projects' })
     expect((await store.getProject(id))?.lastOpenedAt).toBe(1_700_000_000_000)
+  })
+
+  it('reflects a newly created project in the very next listing', async () => {
+    await app.inject({ method: 'GET', url: '/api/projects' })
+    await create('Parking Lot')
+    const list = await app.inject({ method: 'GET', url: '/api/projects' })
+    expect(list.json().projects).toHaveLength(1)
   })
 })
 
@@ -135,7 +144,11 @@ describe('files', () => {
       method: 'GET',
       url: `/api/projects/${id}/views/lld/file?path=src/Vehicle.java`,
     })
-    expect(read.json()).toEqual({ path: 'src/Vehicle.java', content: 'class Vehicle {}' })
+    expect(read.json()).toEqual({
+      path: 'src/Vehicle.java',
+      content: 'class Vehicle {}',
+      mtimeMs: expect.any(Number),
+    })
   })
 
   it('returns 400 for a path that escapes the view', async () => {
@@ -189,5 +202,180 @@ describe('files', () => {
       url: `/api/projects/${id}/views/lld/file?path=a.java&path=b.java`,
     })
     expect(res.statusCode).toBe(400)
+  })
+
+  it('returns 409 when writing a file that changed on disk', async () => {
+    const id = (await create('Parking Lot')).json().id
+    await app.inject({
+      method: 'PUT',
+      url: `/api/projects/${id}/views/lld/file`,
+      payload: { path: 'src/Vehicle.java', content: 'v1' },
+    })
+    const read = await app.inject({
+      method: 'GET',
+      url: `/api/projects/${id}/views/lld/file?path=src/Vehicle.java`,
+    })
+    const stale = read.json().mtimeMs
+
+    await new Promise((r) => setTimeout(r, 20))
+    await app.inject({
+      method: 'PUT',
+      url: `/api/projects/${id}/views/lld/file`,
+      payload: { path: 'src/Vehicle.java', content: 'from elsewhere' },
+    })
+
+    const res = await app.inject({
+      method: 'PUT',
+      url: `/api/projects/${id}/views/lld/file`,
+      payload: { path: 'src/Vehicle.java', content: 'v2', expectedMtimeMs: stale },
+    })
+    expect(res.statusCode).toBe(409)
+  })
+
+  it('returns 415 for an unsupported file type', async () => {
+    const id = (await create('Parking Lot')).json().id
+    const res = await app.inject({
+      method: 'PUT',
+      url: `/api/projects/${id}/views/lld/file`,
+      payload: { path: 'src/lib.jar', content: 'x' },
+    })
+    expect(res.statusCode).toBe(415)
+  })
+
+  it('reflects a newly written file in the very next contents request', async () => {
+    const id = (await create('Parking Lot')).json().id
+    await app.inject({ method: 'GET', url: `/api/projects/${id}/views/lld/contents` })
+
+    await app.inject({
+      method: 'PUT',
+      url: `/api/projects/${id}/views/lld/file`,
+      payload: { path: 'src/Vehicle.java', content: 'class Vehicle {}' },
+    })
+
+    const res = await app.inject({ method: 'GET', url: `/api/projects/${id}/views/lld/contents` })
+    expect(res.json().files).toHaveLength(1)
+  })
+
+  // Unlike the contents request above — which reads files straight off disk
+  // regardless of the scan cache — `updatedAt` in the project listing comes
+  // entirely from the cached scan. This is the one that actually fails if the
+  // write route's `scans.invalidate()` is removed.
+  it('reflects a newer updatedAt in the project listing after a write', async () => {
+    const id = (await create('Parking Lot')).json().id
+    const before = (await app.inject({ method: 'GET', url: '/api/projects' })).json().projects[0]
+      .updatedAt
+
+    await new Promise((r) => setTimeout(r, 20))
+    await app.inject({
+      method: 'PUT',
+      url: `/api/projects/${id}/views/lld/file`,
+      payload: { path: 'src/Vehicle.java', content: 'class Vehicle {}' },
+    })
+
+    const after = (await app.inject({ method: 'GET', url: '/api/projects' })).json().projects[0]
+      .updatedAt
+    expect(after).toBeGreaterThan(before)
+  })
+
+  it('404s on a write for a project deleted from disk instead of resurrecting its folder', async () => {
+    const created = await create('Parking Lot')
+    const id = created.json().id
+    const projectDir = join(dir, 'projects', created.json().path)
+
+    // Prime the cache with a summary for this project before its directory
+    // disappears out from under it, so the write below hits a stale cache
+    // entry rather than a fresh scan that would already know it's gone.
+    await app.inject({ method: 'GET', url: `/api/projects/${id}/views/lld/files` })
+
+    rmSync(projectDir, { recursive: true, force: true })
+
+    const res = await app.inject({
+      method: 'PUT',
+      url: `/api/projects/${id}/views/lld/file`,
+      payload: { path: 'src/Vehicle.java', content: 'class Vehicle {}' },
+    })
+    expect(res.statusCode).toBe(404)
+    // The point of the self-heal: writeViewFile's recursive mkdir must never
+    // run against a stale directory and resurrect the deleted project.
+    expect(existsSync(projectDir)).toBe(false)
+  })
+})
+
+describe('bulk contents', () => {
+  it('returns every file in the view with its content and mtime', async () => {
+    const id = (await create('Parking Lot')).json().id
+    for (const [path, content] of [
+      ['src/Vehicle.java', 'class Vehicle {}'],
+      ['src/model/Ticket.java', 'class Ticket {}'],
+    ]) {
+      await app.inject({
+        method: 'PUT',
+        url: `/api/projects/${id}/views/lld/file`,
+        payload: { path, content },
+      })
+    }
+
+    const res = await app.inject({ method: 'GET', url: `/api/projects/${id}/views/lld/contents` })
+    expect(res.statusCode).toBe(200)
+
+    const files = res.json().files as { path: string; content: string; mtimeMs: number }[]
+    expect(files.map((f) => f.path)).toEqual(['src/Vehicle.java', 'src/model/Ticket.java'])
+    expect(files[0]?.content).toBe('class Vehicle {}')
+    expect(files[0]?.mtimeMs).toBeGreaterThan(0)
+  })
+
+  it('returns an empty list for a view with no files', async () => {
+    const id = (await create('Parking Lot')).json().id
+    const res = await app.inject({ method: 'GET', url: `/api/projects/${id}/views/lld/contents` })
+    expect(res.json()).toEqual({ files: [] })
+  })
+
+  it('returns 400 for an unknown view kind', async () => {
+    const id = (await create('Parking Lot')).json().id
+    const res = await app.inject({ method: 'GET', url: `/api/projects/${id}/views/bogus/contents` })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('returns 404 for an unknown project', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/projects/nope/views/lld/contents' })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('skips files that disappear between listing and reading', async () => {
+    const id = (await create('Parking Lot')).json().id
+
+    // Create two real files
+    for (const [path, content] of [
+      ['src/Vehicle.java', 'class Vehicle {}'],
+      ['src/model/Ticket.java', 'class Ticket {}'],
+    ]) {
+      await app.inject({
+        method: 'PUT',
+        url: `/api/projects/${id}/views/lld/file`,
+        payload: { path, content },
+      })
+    }
+
+    // Mock listViewFiles to return an extra phantom file that doesn't exist
+    const originalListViewFiles = filesModule.listViewFiles
+    vi.spyOn(filesModule, 'listViewFiles').mockImplementation(async (projectDir, view) => {
+      const realFiles = await originalListViewFiles(projectDir, view)
+      return [
+        ...realFiles,
+        { path: 'src/Phantom.java', size: 1000 }
+      ]
+    })
+
+    try {
+      const res = await app.inject({ method: 'GET', url: `/api/projects/${id}/views/lld/contents` })
+      expect(res.statusCode).toBe(200)
+
+      const files = res.json().files as { path: string; content: string; mtimeMs: number }[]
+      // Should contain only the real files, not the phantom
+      expect(files.map((f) => f.path)).toEqual(['src/Vehicle.java', 'src/model/Ticket.java'])
+      expect(files).toHaveLength(2)
+    } finally {
+      vi.restoreAllMocks()
+    }
   })
 })
