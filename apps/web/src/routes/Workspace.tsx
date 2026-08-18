@@ -2,6 +2,8 @@ import MonacoEditor from '@monaco-editor/react'
 import { useCallback, useEffect, useState } from 'react'
 import type { FileEntry, ViewKind } from '@sd/shared'
 import { FileTree } from '../components/FileTree.js'
+import { Graph } from '../graph/Graph.js'
+import { useProjectModel } from '../graph/useProjectModel.js'
 import type { ApiClient } from '../api/client.js'
 
 type Props = { client: ApiClient; projectId: string; view: ViewKind; onBack: () => void }
@@ -28,6 +30,28 @@ export function Workspace({ client, projectId, view, onBack }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [mtimeMs, setMtimeMs] = useState<number | undefined>(undefined)
   const [conflict, setConflict] = useState(false)
+
+  // Loaded once per [client, projectId, view] — never refreshed by save() or
+  // update(), so the set of paths stays stable and useProjectModel's re-seed
+  // effect (keyed on that path set) does not fire on every edit. The
+  // consequence: a file created outside the app is invisible to the graph
+  // until the view is reopened. Acceptable for M2 — a filesystem watcher is
+  // explicitly out of scope.
+  const [contents, setContents] = useState<{ path: string; content: string }[]>([])
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const loaded = await client.readViewContents(projectId, view)
+        setContents(loaded.files.map((f) => ({ path: f.path, content: f.content })))
+      } catch (err) {
+        setError((err as Error).message)
+      }
+    })()
+  }, [client, projectId, view])
+
+  const { model, update, error: modelError } = useProjectModel(contents)
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
 
   const dirty = selected !== null && content !== savedContent
 
@@ -64,7 +88,13 @@ export function Workspace({ client, projectId, view, onBack }: Props) {
       setConflict(false)
       setError(null)
     } catch (err) {
+      // error and conflict are alternatives, never both — see the identical
+      // ruling in save()'s catch below. Reachable when a save 409s (banner
+      // up, buffer dirty), the user switches files and confirms the
+      // discard, and that read itself fails: without clearing conflict here,
+      // the stale banner would stay mounted alongside this new alert.
       setError((err as Error).message)
+      setConflict(false)
     }
   }
 
@@ -118,6 +148,28 @@ export function Workspace({ client, projectId, view, onBack }: Props) {
     }
   }
 
+  function onEditorChange(value: string | undefined) {
+    const next = value ?? ''
+    setContent(next)
+    setError(null)
+    if (selected) update(selected, next)
+  }
+
+  function onSelectNode(id: string) {
+    setSelectedNodeId(id)
+    const node = model.nodes.find((n) => n.id === id)
+    if (node?.file && node.file !== selected) void open(node.file)
+  }
+
+  function onCursorLine(lineNumber: number) {
+    const containing = model.nodes
+      .filter((n) => n.file === selected && n.line !== undefined && n.endLine !== undefined)
+      .filter((n) => lineNumber >= (n.line ?? 0) && lineNumber <= (n.endLine ?? 0))
+      // Innermost wins, so the cursor inside a nested type selects the nested type.
+      .sort((a, b) => (b.line ?? 0) - (a.line ?? 0))[0]
+    if (containing) setSelectedNodeId(containing.id)
+  }
+
   return (
     <div className="workspace">
       <header>
@@ -134,6 +186,7 @@ export function Workspace({ client, projectId, view, onBack }: Props) {
         </button>
         {dirty && <span>Unsaved changes</span>}
         {error && <span role="alert">{error}</span>}
+        {modelError && <span role="alert">Graph unavailable: {modelError}</span>}
       </header>
 
       <FileTree files={files} selected={selected} onSelect={(p) => void open(p)} />
@@ -156,9 +209,15 @@ export function Workspace({ client, projectId, view, onBack }: Props) {
             height="100%"
             language={monacoLanguage(selected)}
             value={content}
-            onChange={(value) => {
-              setContent(value ?? '')
-              setError(null)
+            onChange={onEditorChange}
+            onMount={(editor) => {
+              ;(
+                editor as {
+                  onDidChangeCursorPosition: (
+                    cb: (e: { position: { lineNumber: number } }) => void,
+                  ) => void
+                }
+              ).onDidChangeCursorPosition((e) => onCursorLine(e.position.lineNumber))
             }}
             options={{ minimap: { enabled: false }, fontSize: 14 }}
           />
@@ -166,6 +225,8 @@ export function Workspace({ client, projectId, view, onBack }: Props) {
           <p>Select a file to start editing.</p>
         )}
       </section>
+
+      <Graph model={model} selectedId={selectedNodeId} onSelect={onSelectNode} />
     </div>
   )
 }

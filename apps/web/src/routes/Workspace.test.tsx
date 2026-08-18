@@ -4,11 +4,61 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '../api/client.js'
 import { Workspace } from './Workspace.js'
 
-vi.mock('@monaco-editor/react', () => ({
-  default: ({ value, onChange }: { value: string; onChange: (v: string | undefined) => void }) => (
-    <textarea aria-label="editor" value={value} onChange={(e) => onChange(e.target.value)} />
+// Route 1: real Node WASM paths, exercising the wiring against the real parser
+// — the same route Task 13 used for useProjectModel.test.ts. defaultWasmPaths
+// comes from '@sd/parser/default-wasm-paths.js', not the package's main
+// barrel ('@sd/parser'): the barrel deliberately does not re-export it, so
+// that no browser build path can reach node:module. See
+// packages/parser/src/index.ts for why.
+vi.mock('../graph/wasm.js', async () => ({
+  wasmPaths: (await import('@sd/parser/default-wasm-paths.js')).defaultWasmPaths(),
+}))
+
+vi.mock('../graph/Graph.js', () => ({
+  Graph: ({
+    model,
+    selectedId,
+    onSelect,
+  }: {
+    model: { nodes: { id: string; name: string }[] }
+    selectedId: string | null
+    onSelect: (id: string) => void
+  }) => (
+    <div data-testid="graph">
+      <span data-testid="selected">{selectedId ?? ''}</span>
+      {model.nodes.map((n) => (
+        <button key={n.id} type="button" onClick={() => onSelect(n.id)}>
+          node:{n.name}
+        </button>
+      ))}
+    </div>
   ),
 }))
+
+vi.mock('@monaco-editor/react', async () => {
+  const { useEffect } = await import('react')
+  return {
+    default: ({
+      value,
+      onChange,
+      onMount,
+    }: {
+      value: string
+      onChange: (v: string | undefined) => void
+      onMount?: (editor: unknown) => void
+    }) => {
+      useEffect(() => {
+        onMount?.({
+          onDidChangeCursorPosition: (cb: (e: { position: { lineNumber: number } }) => void) =>
+            cb({ position: { lineNumber: 1 } }),
+        })
+        // Mount-only, matching the real editor's lifecycle.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [])
+      return <textarea aria-label="editor" value={value} onChange={(e) => onChange(e.target.value)} />
+    },
+  }
+})
 
 const ID = '3f2504e0-4f89-41d3-9a0c-0305e82c3301'
 
@@ -19,6 +69,9 @@ beforeEach(() => {
     readFile: vi
       .fn()
       .mockResolvedValue({ path: 'src/Vehicle.java', content: 'class Vehicle {}', mtimeMs: 1 }),
+    readViewContents: vi.fn().mockResolvedValue({
+      files: [{ path: 'src/Vehicle.java', content: 'class Vehicle {}', mtimeMs: 1 }],
+    }),
     writeFile: vi.fn().mockResolvedValue(undefined),
     listProjects: vi.fn(),
     createProject: vi.fn(),
@@ -256,5 +309,75 @@ describe('Workspace', () => {
     // getByRole throws if more than one match — this proves the old error
     // alert was cleared when the conflict banner took over.
     expect(screen.getByRole('alert')).toBeTruthy()
+  })
+
+  it('open() clears the conflict banner when the discarding read itself fails', async () => {
+    ;(client.listFiles as ReturnType<typeof vi.fn>).mockResolvedValue({
+      files: [
+        { path: 'src/Vehicle.java', size: 20 },
+        { path: 'src/Ticket.java', size: 10 },
+      ],
+    })
+    const readFile = client.readFile as ReturnType<typeof vi.fn>
+    readFile.mockResolvedValueOnce({ path: 'src/Vehicle.java', content: 'class Vehicle {}', mtimeMs: 1 })
+    readFile.mockRejectedValueOnce(new Error('read failed'))
+    ;(client.writeFile as ReturnType<typeof vi.fn>).mockRejectedValue(
+      Object.assign(new Error('File changed on disk'), { status: 409 }),
+    )
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
+    await userEvent.click(await screen.findByText('src/Vehicle.java'))
+    await screen.findByLabelText('editor')
+    await userEvent.type(screen.getByLabelText('editor'), ' ')
+    await userEvent.click(screen.getByRole('button', { name: /save/i }))
+    await screen.findByText(/changed on disk/i)
+
+    // Dirty buffer + a confirmed discard + a read that fails: exactly the
+    // sequence Task 5 left unhandled — open()'s catch set error without
+    // clearing conflict, so the stale conflict banner stayed mounted
+    // alongside the new error.
+    await userEvent.click(screen.getByText('src/Ticket.java'))
+
+    expect(await screen.findByText(/read failed/i)).toBeTruthy()
+    // getByRole throws if more than one match — proves the stale conflict
+    // banner was cleared when open()'s own read failed.
+    expect(screen.getByRole('alert')).toBeTruthy()
+  })
+
+  it('loads the whole view once and renders its types', async () => {
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
+    await waitFor(() => expect(client.readViewContents).toHaveBeenCalledWith(ID, 'lld'))
+    expect(await screen.findByText('node:Vehicle')).toBeTruthy()
+  })
+
+  it('updates the graph as the editor changes, without saving', async () => {
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
+    await screen.findByText('node:Vehicle')
+    await userEvent.click(screen.getByText('src/Vehicle.java'))
+    await screen.findByLabelText('editor')
+
+    await userEvent.clear(screen.getByLabelText('editor'))
+    // user-event v14 treats `{`/`}` as key-sequence syntax (e.g. `{enter}`);
+    // `{{` and `}}` are how you type a literal brace.
+    await userEvent.type(screen.getByLabelText('editor'), 'class Bike {{}}')
+
+    expect(await screen.findByText('node:Bike')).toBeTruthy()
+    expect(client.writeFile).not.toHaveBeenCalled()
+  })
+
+  it('opens the file for a clicked node', async () => {
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
+    await userEvent.click(await screen.findByText('node:Vehicle'))
+    await waitFor(() => expect(client.readFile).toHaveBeenCalledWith(ID, 'lld', 'src/Vehicle.java'))
+  })
+
+  it('selects the node whose range contains the cursor', async () => {
+    render(<Workspace client={client} projectId={ID} view="lld" onBack={vi.fn()} />)
+    await screen.findByText('node:Vehicle')
+    await userEvent.click(screen.getByText('src/Vehicle.java'))
+    await screen.findByLabelText('editor')
+
+    await waitFor(() => expect(screen.getByTestId('selected').textContent).toContain('Vehicle'))
   })
 })
