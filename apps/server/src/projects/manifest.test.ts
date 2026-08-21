@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ProjectManifest, Views } from '@sd/shared'
+import type { ProjectManifest, ViewMeta, Views } from '@sd/shared'
 import { viewMetaSchema } from '@sd/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { detectViews, loadManifest, reconcileViews, viewsEqual, writeManifest } from './manifest.js'
@@ -50,13 +50,27 @@ describe('reconcileViews', () => {
 
 describe('viewsEqual', () => {
   it('compares every field of ViewMeta', () => {
-    // viewsEqual is hand-written per field. A field added to ViewMeta and not to
-    // this function makes every project silently rewrite project.json on open.
-    // This is a tripwire: it fails when a new field is added to ViewMeta without
-    // updating viewsEqual. See the guard in the test file rather than making
-    // requests in comments.
+    // Key-list tripwire. A field added to ViewMeta and not to this function
+    // makes every project silently rewrite project.json on open. This test
+    // will go red, but can be silenced by editing the expected array — so it is
+    // paired with a behavioural test below that cannot.
     const keys = Object.keys(viewMetaSchema.shape).sort()
     expect(keys).toEqual(['entryPoint', 'language'])
+  })
+
+  it('returns false when any single ViewMeta field differs', () => {
+    // Behavioural companion to the key-list tripwire above. That one can be
+    // silenced by editing its expected array; this one cannot, because it walks
+    // whatever fields the schema actually declares. A field added to ViewMeta and
+    // not to viewsEqual makes this fail: the field is absent from `base` and
+    // present in the mutated copy, so an implementation that ignores it reports
+    // the two as equal.
+    const base = { language: 'java', entryPoint: 'Main' } as const
+    for (const key of Object.keys(viewMetaSchema.shape)) {
+      const a: Views = { lld: { ...base } }
+      const b: Views = { lld: { ...base, [key]: 'CHANGED' } as ViewMeta }
+      expect(viewsEqual(a, b), `viewsEqual ignores the ${key} field`).toBe(false)
+    }
   })
 
   it('ignores key insertion order', () => {

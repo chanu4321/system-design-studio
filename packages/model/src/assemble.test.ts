@@ -20,14 +20,20 @@ const type = (name: string, file: string) => ({
 
 describe('assemble', () => {
   it('assigns a strength to every edge kind', () => {
-    // A kind missing from EDGE_STRENGTH gets indexOf -1 and wins every comparison,
-    // so a new HLD kind would silently outrank `extends`.
-    // This is a tripwire: it fails when a new EdgeKind is added without updating EDGE_STRENGTH.
-    const kinds: EdgeKind[] = [
-      'extends', 'implements', 'composition', 'aggregation', 'dependency',
-      'calls', 'publishes', 'reads', 'replicates',
-    ]
-    for (const kind of kinds) expect(EDGE_STRENGTH.indexOf(kind)).toBeGreaterThanOrEqual(0)
+    // Tripwire, and deliberately a compile-time one. This Record must name every
+    // member of EdgeKind: adding a kind to the union without adding it here fails
+    // `pnpm typecheck`, before any test runs. A plain `EdgeKind[]` array cannot do
+    // this — TypeScript checks that each element is a valid kind, never that the
+    // list is complete — so a missing kind would get indexOf -1 and silently
+    // outrank `extends`, the strongest real kind. Do not "simplify" this to an array.
+    const everyKind: Record<EdgeKind, true> = {
+      extends: true, implements: true, composition: true,
+      aggregation: true, dependency: true,
+      calls: true, publishes: true, reads: true, replicates: true,
+    }
+    for (const kind of Object.keys(everyKind) as EdgeKind[]) {
+      expect(EDGE_STRENGTH.indexOf(kind)).toBeGreaterThanOrEqual(0)
+    }
   })
 
   it('resolves a reference between two files', () => {
