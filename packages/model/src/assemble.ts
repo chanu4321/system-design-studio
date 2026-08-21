@@ -1,7 +1,7 @@
 import type { DiagramModel, EdgeKind, FileModel, ModelEdge, ModelNode } from './types.js'
 
-/** Strongest first. When one pair carries several kinds, the strongest survives. */
-const EDGE_STRENGTH: EdgeKind[] = [
+/** Strongest first. Every EdgeKind must appear; see the exhaustiveness test. */
+export const EDGE_STRENGTH: readonly EdgeKind[] = [
   'extends', 'implements', 'composition', 'aggregation', 'dependency',
   'calls', 'publishes', 'reads', 'replicates',
 ]

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { assemble, nodeSetChanged } from './assemble.js'
-import type { FileModel } from './types.js'
+import { EDGE_STRENGTH, assemble, nodeSetChanged } from './assemble.js'
+import type { EdgeKind, FileModel } from './types.js'
 
 const file = (over: Partial<FileModel> & { file: string }): FileModel => ({
   nodes: [],
@@ -19,6 +19,17 @@ const type = (name: string, file: string) => ({
 })
 
 describe('assemble', () => {
+  it('assigns a strength to every edge kind', () => {
+    // A kind missing from EDGE_STRENGTH gets indexOf -1 and wins every comparison,
+    // so a new HLD kind would silently outrank `extends`.
+    // This is a tripwire: it fails when a new EdgeKind is added without updating EDGE_STRENGTH.
+    const kinds: EdgeKind[] = [
+      'extends', 'implements', 'composition', 'aggregation', 'dependency',
+      'calls', 'publishes', 'reads', 'replicates',
+    ]
+    for (const kind of kinds) expect(EDGE_STRENGTH.indexOf(kind)).toBeGreaterThanOrEqual(0)
+  })
+
   it('resolves a reference between two files', () => {
     const model = assemble([
       file({ file: 'A.java', nodes: [type('A', 'A.java')], refs: [{ fromId: 'A.java#A', toName: 'B', kind: 'composition' }] }),

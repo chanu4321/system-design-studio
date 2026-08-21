@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ProjectManifest, Views } from '@sd/shared'
+import { viewMetaSchema } from '@sd/shared'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { detectViews, loadManifest, reconcileViews, viewsEqual, writeManifest } from './manifest.js'
 
@@ -48,6 +49,16 @@ describe('reconcileViews', () => {
 })
 
 describe('viewsEqual', () => {
+  it('compares every field of ViewMeta', () => {
+    // viewsEqual is hand-written per field. A field added to ViewMeta and not to
+    // this function makes every project silently rewrite project.json on open.
+    // This is a tripwire: it fails when a new field is added to ViewMeta without
+    // updating viewsEqual. See the guard in the test file rather than making
+    // requests in comments.
+    const keys = Object.keys(viewMetaSchema.shape).sort()
+    expect(keys).toEqual(['entryPoint', 'language'])
+  })
+
   it('ignores key insertion order', () => {
     // Built in opposite orders on purpose. A JSON.stringify comparison would
     // call these different and rewrite project.json on every open.

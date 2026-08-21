@@ -48,7 +48,8 @@ export function reconcileViews(declared: Views, present: Views): Views {
  * nothing enforces. Add a third view kind to one and not the other and every
  * multi-view project would silently rewrite `project.json` on open.
  *
- * Extend this when `ViewMeta` gains a field.
+ * This function must compare every field of ViewMeta. The test "compares every
+ * field of ViewMeta" enforces this coupling via the schema shape.
  */
 export function viewsEqual(a: Views, b: Views): boolean {
   for (const kind of VIEW_KINDS) {
