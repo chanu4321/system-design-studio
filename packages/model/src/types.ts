@@ -21,6 +21,8 @@ export type ModelNode = {
   id: string
   name: string
   kind: NodeKind
+  /** Java package, C++ namespace. Absent means the default package. */
+  namespace?: string
   file?: string
   line?: number
   /** Cursor-to-node highlighting needs a range, not a start line. */
@@ -49,7 +51,7 @@ export type TypeRef = {
 /** One file's extraction result. */
 export type FileModel = {
   file: string
-  package?: string
+  namespace?: string
   nodes: ModelNode[]
   refs: TypeRef[]
   stale?: boolean

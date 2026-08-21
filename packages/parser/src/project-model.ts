@@ -24,20 +24,20 @@ export function createProjectModel(parser: JavaParser): ProjectModel {
 
   function extract(path: string, content: string): FileModel {
     const tree = parser.parse(content)
-    const { package: pkg, nodes } = extractTypes(tree, path)
+    const { namespace, nodes } = extractTypes(tree, path)
 
     // A file mid-edit keeps its previous shape rather than vanishing from the
     // graph, so a single broken keystroke never blanks the diagram.
     if (tree.rootNode.hasError) {
       const previous = byFile.get(path)
       if (previous) return { ...previous, stale: true }
-      return pkg
-        ? { file: path, package: pkg, nodes, refs: extractRefs(tree, path, nodes), stale: true }
+      return namespace
+        ? { file: path, namespace, nodes, refs: extractRefs(tree, path, nodes), stale: true }
         : { file: path, nodes, refs: extractRefs(tree, path, nodes), stale: true }
     }
 
     const refs = extractRefs(tree, path, nodes)
-    return pkg ? { file: path, package: pkg, nodes, refs } : { file: path, nodes, refs }
+    return namespace ? { file: path, namespace, nodes, refs } : { file: path, nodes, refs }
   }
 
   function rebuild(): DiagramModel {

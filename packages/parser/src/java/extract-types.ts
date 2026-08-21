@@ -201,7 +201,7 @@ function walk(node: SyntaxNode, file: string, prefix: string, out: ModelNode[]):
 export function extractTypes(
   tree: { rootNode: SyntaxNode },
   file: string,
-): { package?: string; nodes: ModelNode[] } {
+): { namespace?: string; nodes: ModelNode[] } {
   const root = tree.rootNode
   const packageNode = root.namedChildren.find((c) => c.type === 'package_declaration')
   // The package_declaration's sole child is `identifier` for a single
@@ -213,5 +213,5 @@ export function extractTypes(
   const nodes: ModelNode[] = []
   walk(root, file, '', nodes)
 
-  return pkg ? { package: pkg, nodes } : { nodes }
+  return pkg ? { namespace: pkg, nodes } : { nodes }
 }

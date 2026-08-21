@@ -47,12 +47,12 @@ describe('assemble', () => {
     const model = assemble([
       file({
         file: 'x/A.java',
-        package: 'x',
+        namespace: 'x',
         nodes: [type('A', 'x/A.java')],
         refs: [{ fromId: 'x/A.java#A', toName: 'Dup', kind: 'dependency' }],
       }),
-      file({ file: 'x/Dup.java', package: 'x', nodes: [type('Dup', 'x/Dup.java')] }),
-      file({ file: 'y/Dup.java', package: 'y', nodes: [type('Dup', 'y/Dup.java')] }),
+      file({ file: 'x/Dup.java', namespace: 'x', nodes: [type('Dup', 'x/Dup.java')] }),
+      file({ file: 'y/Dup.java', namespace: 'y', nodes: [type('Dup', 'y/Dup.java')] }),
     ])
     expect(model.edges).toEqual([
       { from: 'x/A.java#A', to: 'x/Dup.java#Dup', kind: 'dependency' },
@@ -107,6 +107,24 @@ describe('assemble', () => {
     const a = file({ file: 'A.java', nodes: [type('A', 'A.java')] })
     const b = file({ file: 'B.java', nodes: [type('B', 'B.java')] })
     expect(assemble([a, b]).nodes.map((n) => n.id)).toEqual(assemble([b, a]).nodes.map((n) => n.id))
+  })
+
+  it('carries each file namespace onto the nodes it declared', () => {
+    const model = assemble([
+      file({ file: 'a/Main.java', namespace: 'com.example', nodes: [type('Main', 'a/Main.java')] }),
+      file({ file: 'B.java', nodes: [type('Loose', 'B.java')] }), // default package
+    ])
+    expect(model.nodes.find((n) => n.name === 'Main')?.namespace).toBe('com.example')
+    expect(model.nodes.find((n) => n.name === 'Loose')?.namespace).toBeUndefined()
+  })
+
+  it('keeps namespace on a node marked stale', () => {
+    const model = assemble([
+      file({ file: 'a/Main.java', namespace: 'com.example', nodes: [type('Main', 'a/Main.java')], stale: true }),
+    ])
+    const main = model.nodes[0]
+    expect(main?.stale).toBe(true)
+    expect(main?.namespace).toBe('com.example')
   })
 })
 

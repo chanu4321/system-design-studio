@@ -18,12 +18,16 @@ export function assemble(files: FileModel[]): DiagramModel {
 
   for (const f of files) {
     for (const node of f.nodes) {
-      const withStale = f.stale ? { ...node, stale: true } : node
-      nodes.push(withStale)
-      packageOf.set(withStale.id, f.package)
-      const list = byName.get(withStale.name)
-      if (list) list.push(withStale)
-      else byName.set(withStale.name, [withStale])
+      const withMeta: ModelNode = {
+        ...node,
+        ...(f.namespace === undefined ? {} : { namespace: f.namespace }),
+        ...(f.stale ? { stale: true } : {}),
+      }
+      nodes.push(withMeta)
+      packageOf.set(withMeta.id, f.namespace)
+      const list = byName.get(withMeta.name)
+      if (list) list.push(withMeta)
+      else byName.set(withMeta.name, [withMeta])
     }
   }
 

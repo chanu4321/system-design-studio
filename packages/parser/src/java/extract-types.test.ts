@@ -24,7 +24,7 @@ describe('extractTypes', () => {
   })
 
   it('records the package declaration', () => {
-    expect(extract('package model;\nclass A {}').package).toBe('model')
+    expect(extract('package model;\nclass A {}').namespace).toBe('model')
   })
 
   it('gives a nested type a qualified name', () => {
