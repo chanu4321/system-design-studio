@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createScanCache } from './cache.js'
 import { createProject, scanProjects, type ScanResult } from './scan.js'
 
@@ -106,13 +106,33 @@ describe('createScanCache', () => {
   })
 
   it('does not re-scan forever when a scan itself rewrites a manifest', async () => {
-    // scanProjects calls loadManifest. If a rewrite during the scan invalidated
-    // the cache, the completing scan would refuse to install and the next get()
-    // would walk again. Two listings must produce exactly one walk.
-    const scan = vi.fn(async (): Promise<ScanResult> => ({ projects: [], broken: [] }))
-    const cache = createScanCache('/irrelevant', scan)
+    // A declared view whose directory does not exist forces loadManifest to
+    // rewrite project.json *during* the walk — the exact condition the trap
+    // needs. If that rewrite invalidated the cache (bumping the epoch
+    // mid-scan), the completing scan would refuse to install its result and
+    // the next get() would walk again, forever.
+    const created = await createProject(root, { title: 'A', views: { lld: {} } })
+    const projectDir = join(root, created.path)
+    rmSync(join(projectDir, 'lld'), { recursive: true, force: true })
+
+    // Exercises the real scanProjects -> loadManifest -> writeManifest path.
+    // Wrapped only to count actual walks; a bare stub would never reach
+    // loadManifest and so could never trip on this trap.
+    let walks = 0
+    const countingScan = async (dir: string): Promise<ScanResult> => {
+      walks++
+      return scanProjects(dir)
+    }
+    const cache = createScanCache(root, countingScan)
+
     await cache.get()
     await cache.get()
-    expect(scan).toHaveBeenCalledTimes(1)
+
+    expect(walks).toBe(1)
+
+    // Proves the rewrite actually happened during the walk, rather than this
+    // setup quietly being a no-op.
+    const manifest = JSON.parse(readFileSync(join(projectDir, 'project.json'), 'utf8'))
+    expect(manifest.views.lld).toBeUndefined()
   })
 })
