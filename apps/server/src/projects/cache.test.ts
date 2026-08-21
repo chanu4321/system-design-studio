@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createScanCache } from './cache.js'
 import { createProject, scanProjects, type ScanResult } from './scan.js'
 
@@ -103,5 +103,16 @@ describe('createScanCache', () => {
     // But the cache itself must not have been poisoned with it — the next
     // get() has to do a real rescan and see the write.
     expect((await cache.get()).projects).toHaveLength(2)
+  })
+
+  it('does not re-scan forever when a scan itself rewrites a manifest', async () => {
+    // scanProjects calls loadManifest. If a rewrite during the scan invalidated
+    // the cache, the completing scan would refuse to install and the next get()
+    // would walk again. Two listings must produce exactly one walk.
+    const scan = vi.fn(async (): Promise<ScanResult> => ({ projects: [], broken: [] }))
+    const cache = createScanCache('/irrelevant', scan)
+    await cache.get()
+    await cache.get()
+    expect(scan).toHaveBeenCalledTimes(1)
   })
 })

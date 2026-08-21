@@ -120,6 +120,8 @@ export function registerProjectRoutes(
     const { id } = req.params as { id: string }
     const found = await findProject({ config, scans }, id)
     if (!found) return reply.code(404).send({ error: `No project with id ${id}` })
-    return loadManifest(found.dir)
+    const { manifest, rewritten } = await loadManifest(found.dir)
+    if (rewritten) scans.invalidate()
+    return manifest
   })
 }

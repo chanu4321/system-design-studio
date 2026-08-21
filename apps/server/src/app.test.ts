@@ -121,6 +121,28 @@ describe('projects', () => {
     const list = await app.inject({ method: 'GET', url: '/api/projects' })
     expect(list.json().projects).toHaveLength(1)
   })
+
+  it('invalidates the scan cache when opening a project rewrote its manifest', async () => {
+    const created = await create('Parking Lot')
+    const id = created.json().id
+    const projectDir = join(dir, 'projects', created.json().path)
+
+    // Prime the cache with the manifest's current (correct) view list.
+    const before = await app.inject({ method: 'GET', url: '/api/projects' })
+    expect(before.json().projects[0].views).toEqual(['lld'])
+
+    // Remove the declared view's directory directly on disk, behind the
+    // cache's back — same as a directory deleted outside the app. A declared
+    // view whose directory does not exist forces a rewrite on open.
+    rmSync(join(projectDir, 'lld'), { recursive: true, force: true })
+
+    await app.inject({ method: 'GET', url: `/api/projects/${id}` })
+    const after = await app.inject({ method: 'GET', url: '/api/projects' })
+
+    // The listing must reflect the reconciled manifest, not the pre-open
+    // cached snapshot.
+    expect(after.json().projects[0].views).toEqual([])
+  })
 })
 
 describe('files', () => {

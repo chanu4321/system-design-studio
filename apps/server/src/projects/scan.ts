@@ -168,7 +168,10 @@ export async function scanProjects(rootDir: string): Promise<ScanResult> {
     if (!(await exists(join(projectDir, 'project.json')))) continue
 
     try {
-      const manifest = await loadManifest(projectDir)
+      // The scan reads the reconciled manifest directly, so its summary already
+      // matches disk. It must NOT invalidate: scanProjects runs inside the cache,
+      // and bumping the epoch mid-walk means the walk never installs its result.
+      const { manifest } = await loadManifest(projectDir)
       result.projects.push(summarise(manifest, entry.name, await newestMtime(projectDir)))
     } catch (err) {
       result.broken.push({ path: entry.name, reason: (err as Error).message })

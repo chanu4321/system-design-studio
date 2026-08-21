@@ -112,7 +112,7 @@ describe('loadManifest', () => {
       JSON.stringify({ id: ID, title: 'Parking Lot', views: { lld: { language: 'java' }, hld: {} } }),
     )
 
-    const loaded = await loadManifest(dir)
+    const { manifest: loaded } = await loadManifest(dir)
     expect(loaded.views).toEqual({ lld: { language: 'java' } })
 
     const onDisk = JSON.parse(readFileSync(join(dir, 'project.json'), 'utf8'))
@@ -136,5 +136,35 @@ describe('loadManifest', () => {
     await loadManifest(dir)
 
     expect(readFileSync(join(dir, 'project.json'), 'utf8')).toBe(before)
+  })
+
+  it('reports rewritten when reconciliation changed the views', async () => {
+    // Declared in the manifest, but its directory does not exist on disk.
+    const manifest: ProjectManifest = {
+      id: ID,
+      title: 'Parking Lot',
+      tags: [],
+      views: { lld: { language: 'java' } },
+    }
+    await writeManifest(dir, manifest)
+
+    const { manifest: loaded, rewritten } = await loadManifest(dir)
+    expect(rewritten).toBe(true)
+    expect(loaded.views.lld).toBeUndefined()
+  })
+
+  it('reports not rewritten when the manifest already matches disk', async () => {
+    mkdirSync(join(dir, 'lld', 'src'), { recursive: true })
+    writeFileSync(join(dir, 'lld', 'src', 'A.java'), 'class A {}')
+    const manifest: ProjectManifest = {
+      id: ID,
+      title: 'Parking Lot',
+      tags: [],
+      views: { lld: { language: 'java' } },
+    }
+    await writeManifest(dir, manifest)
+
+    const { rewritten } = await loadManifest(dir)
+    expect(rewritten).toBe(false)
   })
 })

@@ -102,7 +102,9 @@ export async function writeManifest(projectDir: string, manifest: ProjectManifes
   await writeFile(join(projectDir, MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
 }
 
-export async function loadManifest(projectDir: string): Promise<ProjectManifest> {
+export async function loadManifest(
+  projectDir: string,
+): Promise<{ manifest: ProjectManifest; rewritten: boolean }> {
   const file = join(projectDir, MANIFEST)
 
   let raw: string
@@ -128,12 +130,11 @@ export async function loadManifest(projectDir: string): Promise<ProjectManifest>
   const reconciled = reconcileViews(manifest.views, await detectViews(projectDir))
   const next: ProjectManifest = { ...manifest, views: reconciled }
 
-  // Only rewrite when the reconciliation actually changed something, so that
+  // Only rewrite when reconciliation actually changed something, so that
   // merely opening a project does not dirty the user's git working tree.
-  if (!viewsEqual(manifest.views, reconciled)) {
-    await writeManifest(projectDir, next)
-  }
-  return next
+  const rewritten = !viewsEqual(manifest.views, reconciled)
+  if (rewritten) await writeManifest(projectDir, next)
+  return { manifest: next, rewritten }
 }
 
 export type { ViewKind }
